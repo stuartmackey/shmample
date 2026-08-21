@@ -6,7 +6,9 @@ from textual.containers import Vertical
 from textual.widgets import Static
 from textual_plotext import PlotextPlot
 
+from shmample import sample_store, tag_store
 from shmample.device import human_bytes
+from shmample.sample_store import CachedPreview
 from shmample.waveform import WavFormat, get_duration_seconds, get_format_info, load_waveform_peaks
 
 
@@ -44,6 +46,15 @@ class PreviewInfo(Vertical):
 
     can_focus=True purely so numbered pane-jump (3, see app.py) has
     somewhere to land - this pane has no bindings/interaction of its own.
+
+    Duration/format/waveform are cached in sample_store (01-auto-tagging.md)
+    keyed on the highlighted file's path - a first hit computes and persists
+    them, every later highlight of the same file just reads the cache
+    instead of re-decoding it. Tags come from tag_store instead - not
+    cached here, since they can change (auto-tag, or later manual editing)
+    independently of the file itself. They're appended to the date/
+    duration/size line rather than getting a row of their own - this pane
+    is only a handful of rows tall to begin with.
     """
 
     can_focus = True
@@ -62,6 +73,13 @@ class PreviewInfo(Vertical):
         height: 1fr;
     }
     """
+
+    def __init__(self, db_path: Path | None = None, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        # Resolved at call time, not a mutable default parameter - same
+        # reasoning as FileBrowser's own settings_path, so tests can
+        # redirect persistence to a tmp_path.
+        self.db_path = db_path if db_path is not None else sample_store.DEFAULT_DB_PATH
 
     def compose(self) -> ComposeResult:
         yield Static("", id="preview-date")
@@ -90,17 +108,44 @@ class PreviewInfo(Vertical):
         else:
             stat = path.stat()
             created = datetime.fromtimestamp(stat.st_ctime)
-            duration = get_duration_seconds(path)
-            duration_text = _format_duration(duration) if duration is not None else "?"
-            date_label.update(
-                f"{path.name}  {created:%Y-%m-%d %H:%M}  {duration_text}  {human_bytes(stat.st_size)}"
+
+            cached = sample_store.get_cached_preview(path, self.db_path)
+            if cached is None:
+                cached = CachedPreview(
+                    duration_seconds=get_duration_seconds(path),
+                    wav_format=get_format_info(path),
+                    # Cached at a fixed, display-independent resolution
+                    # (sample_store.resample_envelope handles fitting it
+                    # to whatever width the plot has at render time) -
+                    # not the plot's own current width, which would tie
+                    # the cached data to whatever size the pane happened
+                    # to be the first time this file was ever previewed.
+                    envelope=load_waveform_peaks(
+                        path, target_width=sample_store.ENVELOPE_RESOLUTION
+                    ),
+                )
+                sample_store.store_preview(path, cached, self.db_path)
+
+            duration_text = (
+                _format_duration(cached.duration_seconds)
+                if cached.duration_seconds is not None
+                else "?"
+            )
+            date_line = (
+                f"{path.name}  {created:%Y-%m-%d %H:%M}  {duration_text}  "
+                f"{human_bytes(stat.st_size)}"
+            )
+            tags = sorted(tag_store.tags_for_sample(path, self.db_path))
+            if tags:
+                date_line += f"  Tags: {', '.join(tags)}"
+            date_label.update(date_line)
+
+            format_label.update(
+                _format_wav_format(cached.wav_format) if cached.wav_format is not None else ""
             )
 
-            wav_format = get_format_info(path)
-            format_label.update(_format_wav_format(wav_format) if wav_format is not None else "")
-
             width = plot.size.width or 40
-            peaks = load_waveform_peaks(path, target_width=width)
+            peaks = sample_store.resample_envelope(cached.envelope, width)
             if peaks:
                 plt.plot(peaks, marker="braille")
                 plt.plot([-p for p in peaks], marker="braille")

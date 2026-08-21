@@ -4,8 +4,11 @@ import wave
 import pytest
 from textual_plotext import PlotextPlot
 
+from shmample import sample_store
 from shmample.app import ShmampleApp
 from shmample.device import human_bytes
+from shmample.tag_store import auto_assign_tag
+from shmample.widgets import preview_info as preview_info_module
 from shmample.widgets.file_browser import FileBrowser
 from shmample.widgets.preview_info import PreviewInfo, _format_sample_rate
 
@@ -134,6 +137,97 @@ async def test_rapidly_scrolling_past_a_file_never_loads_its_preview(samples_dir
 
         assert _status_text(preview) == ""
         assert _format_text(preview) == ""
+
+
+async def test_highlighting_a_tagged_file_shows_its_tags_on_the_date_line(samples_dir):
+    db_path = samples_dir / "shmample.db"
+    auto_assign_tag(samples_dir / "kick.wav", "kick", db_path)
+    auto_assign_tag(samples_dir / "kick.wav", "808", db_path)
+
+    app = ShmampleApp(samples_directories=[samples_dir], db_path=db_path)
+    async with app.run_test() as pilot:
+        browser = app.query_one("#files", FileBrowser)
+        preview = app.query_one(PreviewInfo)
+        root_node = await _expanded_root(browser, pilot)
+        browser.focus()
+        browser.move_cursor(_node(root_node, "kick.wav"))
+        await pilot.pause(0.2)
+
+        text = _status_text(preview)
+        # Appended after date/duration/size rather than getting a row of
+        # its own - the wav format line is untouched.
+        assert "kick.wav" in text
+        assert "Tags: " in text
+        assert "808" in text
+        assert "kick" in text
+        assert _format_text(preview) == "8kHz  16-bit  Mono"
+
+
+async def test_highlighting_an_untagged_file_adds_no_trailing_content(samples_dir):
+    app = ShmampleApp(samples_directories=[samples_dir])
+    async with app.run_test() as pilot:
+        browser = app.query_one("#files", FileBrowser)
+        preview = app.query_one(PreviewInfo)
+        root_node = await _expanded_root(browser, pilot)
+        browser.focus()
+        browser.move_cursor(_node(root_node, "kick.wav"))
+        await pilot.pause(0.2)
+
+        assert "Tags:" not in _status_text(preview)
+        assert _format_text(preview) == "8kHz  16-bit  Mono"
+
+
+async def test_second_highlight_of_a_file_reads_from_the_cache(samples_dir, monkeypatch):
+    """The whole point of caching preview info (01-auto-tagging.md) -
+    decoding the waveform only happens once per file; every highlight
+    after that reads sample_store instead."""
+    calls = []
+    original = preview_info_module.load_waveform_peaks
+
+    def _counting_load_waveform_peaks(path, target_width):
+        calls.append(path)
+        return original(path, target_width)
+
+    monkeypatch.setattr(preview_info_module, "load_waveform_peaks", _counting_load_waveform_peaks)
+
+    app = ShmampleApp(samples_directories=[samples_dir])
+    async with app.run_test() as pilot:
+        browser = app.query_one("#files", FileBrowser)
+        preview = app.query_one(PreviewInfo)
+        root_node = await _expanded_root(browser, pilot)
+        kick_node = _node(root_node, "kick.wav")
+        drums_node = _node(root_node, "Drums")
+        browser.focus()
+
+        browser.move_cursor(kick_node)
+        await pilot.pause(0.2)
+        browser.move_cursor(drums_node)
+        await pilot.pause()
+        browser.move_cursor(kick_node)
+        await pilot.pause(0.2)
+
+        assert len(calls) == 1
+        assert "0.50s" in _status_text(preview)
+
+
+async def test_cached_preview_persists_across_widget_instances(samples_dir, tmp_path):
+    """A fresh PreviewInfo pointed at the same db_path sees what an earlier
+    one cached - proving the cache actually lives in the database, not
+    just in-memory on the widget."""
+    db_path = tmp_path / "shmample.db"
+    kick_path = samples_dir / "kick.wav"
+
+    first_app = ShmampleApp(samples_directories=[samples_dir], db_path=db_path)
+    async with first_app.run_test() as pilot:
+        browser = first_app.query_one("#files", FileBrowser)
+        root_node = await _expanded_root(browser, pilot)
+        browser.focus()
+        browser.move_cursor(_node(root_node, "kick.wav"))
+        await pilot.pause(0.2)
+
+    cached = sample_store.get_cached_preview(kick_path, db_path)
+    assert cached is not None
+    assert cached.duration_seconds == pytest.approx(0.5)
 
 
 async def test_moving_between_file_and_folder_updates_pane(samples_dir):

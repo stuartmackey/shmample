@@ -4,6 +4,7 @@ from shmample.widgets.config_list import ConfigList
 from shmample.widgets.device_panel import DevicePanel
 from shmample.widgets.file_browser import FileBrowser
 from shmample.widgets.preview_info import PreviewInfo
+from shmample.widgets.tag_browser import TagBrowser
 
 
 async def test_number_keys_jump_focus_to_named_panes():
@@ -16,9 +17,12 @@ async def test_number_keys_jump_focus_to_named_panes():
         assert isinstance(app.focused, FileBrowser)
 
         await pilot.press("4")
-        assert isinstance(app.focused, PreviewInfo)
+        assert isinstance(app.focused, TagBrowser)
 
         await pilot.press("5")
+        assert isinstance(app.focused, PreviewInfo)
+
+        await pilot.press("6")
         assert isinstance(app.focused, AssignmentGrid)
 
         await pilot.press("1")
@@ -41,7 +45,7 @@ async def test_digit_keys_do_not_clash_with_pane_own_bindings():
 async def test_every_pane_highlights_its_border_when_focused():
     app = ShmampleApp(samples_directories=[])
     async with app.run_test() as pilot:
-        selectors = ["#device", "#configurations", "#files", "#preview", "#assignments"]
+        selectors = ["#device", "#configurations", "#files", "#tags", "#preview", "#assignments"]
         for selector in selectors:
             widget = app.query_one(selector)
             widget.focus()

@@ -7,10 +7,12 @@ from rich.style import Style
 from rich.text import Text
 from textual import events
 from textual.binding import Binding
+from textual.message import Message
 from textual.widgets import Tree
 from textual.widgets._tree import TOGGLE_STYLE  # no public re-export of this small style constant
 from textual.widgets.tree import TreeNode
 
+from shmample import auto_tag, sample_store
 from shmample import settings as settings_module
 from shmample.audio import NoPlayerFoundError, Previewer
 from shmample.device import PAD_NUMBERS
@@ -131,16 +133,23 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
         Binding("a", "start_assign", "Assign"),
         Binding("A", "add_samples_directory", "Add path"),
         Binding("D", "remove_samples_directory", "Remove path"),
+        Binding("t", "auto_tag_cursor_node", "Auto-tag"),
         # Replaces Tree's own "space" (toggle_node) entirely, not just
         # for files - action_toggle_select_or_node below falls back to
         # the original expand/collapse behaviour for a folder.
         Binding("space", "toggle_select_or_node", "Select"),
     ] + VimGoToTopAndBottom.BINDINGS
 
+    class Tagged(Message):
+        """Posted after `t` auto-tags the cursor node (file or folder) -
+        lets MainColumn refresh the tag pane and re-show the current
+        preview without FileBrowser needing to know about either."""
+
     def __init__(
         self,
         samples_directories: list[Path],
         settings_path: Path | None = None,
+        db_path: Path | None = None,
         *args,
         **kwargs,
     ) -> None:
@@ -159,6 +168,10 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
         self.settings_path = (
             settings_path if settings_path is not None else settings_module.SETTINGS_PATH
         )
+        # Same reasoning, shared database file - see TagBrowser's own
+        # db_path for why this falls back to sample_store's attribute
+        # rather than a locally-imported copy of it.
+        self.db_path = db_path if db_path is not None else sample_store.DEFAULT_DB_PATH
         self.samples_directories = list(samples_directories)
         self.last_previewed: Path | None = None
         self.preview_error: str | None = None
@@ -368,6 +381,62 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
                 node.refresh()
 
         self.app.push_screen(BankPickerModal(f"{len(paths)} selected samples"), handle_bank)
+
+    def action_auto_tag_cursor_node(self) -> None:
+        node = self.cursor_node
+        if node is None or node.data is None:
+            return
+        path = node.data.path
+
+        if node.allow_expand:
+            # A folder's worth of samples can genuinely take a while (see
+            # 01-auto-tagging.md's "long running process" note) - run it
+            # off the UI thread with a persistent spinner, same pattern as
+            # ConfigList's own device send, rather than freezing the tree
+            # for however long the walk takes.
+            self.loading = True
+            self.border_subtitle = "Auto-tagging..."
+            self.run_worker(
+                self._auto_tag_folder(path), exclusive=True, group="auto-tag", name="auto-tag"
+            )
+        else:
+            tags = auto_tag.tag_file(path, self.db_path)
+            if tags:
+                self.app.notify(f"Tagged '{path.name}': {', '.join(sorted(tags))}")
+            else:
+                self.app.notify(
+                    f"No naming-convention tags found for '{path.name}'.", severity="warning"
+                )
+            self.post_message(self.Tagged())
+
+    # How often (in files processed) to push a progress update to the UI
+    # during a folder tag run - frequent enough to look alive, far short
+    # of updating on every single file, which across a library the size
+    # of a real sample pack would mean tens of thousands of cross-thread
+    # calls for no visible benefit.
+    TAGGING_PROGRESS_INTERVAL = 50
+
+    async def _auto_tag_folder(self, path: Path) -> None:
+        def on_file_tagged(file_path: Path, tags: set[str], index: int, total: int) -> None:
+            if index == total or index % self.TAGGING_PROGRESS_INTERVAL == 0:
+                # Called from tag_folder's worker thread (asyncio.to_thread
+                # runs it entirely off the event loop) - call_from_thread
+                # is the only safe way back onto the UI thread from here.
+                self.app.call_from_thread(self._set_tagging_progress, index, total)
+
+        try:
+            count = await asyncio.to_thread(
+                auto_tag.tag_folder, path, self.db_path, on_file_tagged
+            )
+        finally:
+            self.loading = False
+            self.border_subtitle = ""
+        noun = "sample" if count == 1 else "samples"
+        self.app.notify(f"Auto-tagged {count} {noun} under '{path.name}'.")
+        self.post_message(self.Tagged())
+
+    def _set_tagging_progress(self, index: int, total: int) -> None:
+        self.border_subtitle = f"Auto-tagging... {index}/{total}"
 
     def action_add_samples_directory(self) -> None:
         def handle_result(directory: Path | None) -> None:

@@ -36,8 +36,9 @@ class ShmampleApp(App):
         Binding("1", "focus_pane('#device')", "Device", show=False),
         Binding("2", "focus_pane('#configurations')", "Configurations", show=False),
         Binding("3", "focus_pane('#files')", "Samples", show=False),
-        Binding("4", "focus_pane('#preview')", "Preview", show=False),
-        Binding("5", "focus_pane('#assignments')", "Assignments", show=False),
+        Binding("4", "focus_pane('#tags')", "Tags", show=False),
+        Binding("5", "focus_pane('#preview')", "Preview", show=False),
+        Binding("6", "focus_pane('#assignments')", "Assignments", show=False),
     ]
 
     def action_focus_pane(self, selector: str) -> None:
@@ -48,6 +49,7 @@ class ShmampleApp(App):
         samples_directories: list[Path],
         configurations_dir: Path | None = None,
         settings_path: Path | None = None,
+        db_path: Path | None = None,
         *args,
         **kwargs,
     ) -> None:
@@ -55,6 +57,7 @@ class ShmampleApp(App):
         self.samples_directories = samples_directories
         self.configurations_dir = configurations_dir
         self.settings_path = settings_path
+        self.db_path = db_path
         self.theme = THEME
         self.device_state: device.DeviceState | None = None
 
@@ -64,10 +67,11 @@ class ShmampleApp(App):
                 self.samples_directories,
                 self.configurations_dir,
                 self.settings_path,
+                self.db_path,
                 id="main-column",
             )
             assignments = AssignmentGrid(self.configurations_dir, id="assignments")
-            assignments.border_title = "[5] Assignments"
+            assignments.border_title = "[6] Assignments"
             yield assignments
         yield Footer()
 

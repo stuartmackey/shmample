@@ -84,9 +84,14 @@ the folder picker (`widgets/directory_picker.py:38-54`): once the tree's own roo
 
 # auto tagging
 
-- Shortcut on a selected file tags that one sample. On a folder, it recursively tags every sample
-  beneath it - folders themselves are never tagged (running it on a root samples directory is
-  the way to tag a whole library).
+- Bound to `t` in the samples pane. On a file it tags that one sample; on a folder it recursively
+  tags every sample beneath it - folders themselves are never tagged (running it on a root
+  samples directory is the way to tag a whole library). A folder run goes through
+  `asyncio.to_thread` with a persistent loading spinner (same pattern as sending a configuration
+  to the device), not a blocking call on the UI thread, since it can genuinely take a while.
+  Tagging a file (or finishing a folder run) refreshes the tag pane's counts and, if the
+  just-tagged file is the one currently shown, the preview pane's tags line too - both pick up
+  the change immediately rather than waiting for the next highlight.
 - Filename/folder naming convention only for this pass. Still need to go through the samples
   under `/run/media/stuart/Music/Samples From Mars/` to actually catalogue the conventions in use
   (HH, BD, etc. are examples, not the full list) before the parser can be written.
@@ -150,3 +155,10 @@ Stored in a resolution/size-independent representation (a fixed, reasonably high
 min/max envelope) rather than at whatever width `PreviewInfo`'s pane happened to be when it was
 generated. Rendering becomes a separate downsampling step at display time, so the same cached
 data serves any pane width.
+
+# preview pane layout
+
+Tags are appended ("Tags: ...") to the end of the date/duration/size line rather than getting a
+row of their own - this pane is only a handful of rows tall, and the waveform is the part that
+actually needs the vertical space. (A right-aligned spot on the wav-format line was tried first
+but didn't work out.)

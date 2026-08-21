@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from shmample import config_store, settings
+from shmample import config_store, sample_store, settings
 
 
 class _InstantFakeProcess:
@@ -52,3 +52,12 @@ def no_real_settings_file(tmp_path, monkeypatch):
     without this, any test exercising Shift+A/Shift+D would read/write
     the real ~/.config/shmample/settings.json."""
     monkeypatch.setattr(settings, "SETTINGS_PATH", tmp_path / "settings.json")
+
+
+@pytest.fixture(autouse=True)
+def no_real_sample_db(tmp_path, monkeypatch):
+    """PreviewInfo resolves a None db_path to sample_store.DEFAULT_DB_PATH
+    at call time (same reasoning as no_real_settings_file above) - without
+    this, any test that highlights a file would read/write the real
+    ~/.config/shmample/shmample.db."""
+    monkeypatch.setattr(sample_store, "DEFAULT_DB_PATH", tmp_path / "shmample.db")
