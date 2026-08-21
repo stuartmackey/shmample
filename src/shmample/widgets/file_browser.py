@@ -12,7 +12,7 @@ from textual.widgets import Tree
 from textual.widgets._tree import TOGGLE_STYLE  # no public re-export of this small style constant
 from textual.widgets.tree import TreeNode
 
-from shmample import auto_tag, sample_store
+from shmample import auto_tag, sample_store, tag_store
 from shmample import settings as settings_module
 from shmample.audio import NoPlayerFoundError, Previewer
 from shmample.device import PAD_NUMBERS
@@ -27,7 +27,11 @@ def _contains_wav(directory: Path) -> bool:
 
     Runs once per folder as it's revealed in the tree, trading away part
     of the lazy-loading benefit - a folder with genuinely nothing valid
-    inside still needs its whole subtree walked to prove that.
+    inside still needs its whole subtree walked to prove that. Used when
+    there's no tag filter active - see FileBrowser.filter_paths, and
+    tag_store.any_sample_under_matches_all_tags for the filtered
+    equivalent (a single SQL query, not a filesystem walk, since it also
+    needs each file's tags rather than just its existence).
     """
     try:
         for entry in os.scandir(directory):
@@ -87,6 +91,11 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
     Adding/removing a configured samples directory is disabled while
     focused (see check_action) - both would otherwise mutate the real
     config from within what's meant to be a temporary, view-only scope.
+
+    `set_tag_filter` applies the tag pane's space-selected tags as an AND
+    filter (see filter_paths) - a file has to carry every filtered tag to
+    show up, and a folder has to have at least one such file anywhere
+    beneath it, or it's hidden entirely rather than shown empty.
 
     Tree has no left/right cursor concept (it's not a grid), so h/l map to
     the nearest vim-flavoured equivalents - jump to parent, toggle node -
@@ -204,19 +213,24 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
         # action_focus_cursor_folder/action_cursor_parent. Empty means
         # "showing the full configured list", not "focused".
         self._root_focus_stack: list[list[Path]] = []
+        # AND filter from the tag pane's space-selected tags (see
+        # set_tag_filter/filter_paths) - empty means "no filter".
+        self.tag_filter: set[str] = set()
         for directory in self.samples_directories:
             self._add_root_node(directory)
 
     def _add_root_node(self, directory: Path) -> TreeNode[Entry]:
         return self.root.add(str(directory), data=Entry(directory), allow_expand=True)
 
-    def _rebuild_roots(self, paths: list[Path]) -> None:
+    def _display_roots(self, paths: list[Path]) -> None:
         """Replaces whatever's currently displayed at the root level with
-        `paths` - used by both focusing into a subfolder and popping back
-        out of one. Never touches `self.samples_directories`."""
+        `paths` - used when the root(s) themselves actually change (see
+        _rebuild_roots). Never touches `self.samples_directories`."""
         self.root.remove_children()
         self._expanded_root_node = None
         nodes = [self._add_root_node(path) for path in paths]
+        if not nodes:
+            return
         self.move_cursor(nodes[0])
         if len(nodes) == 1:
             # A freshly focused (or popped-back-to-still-focused) single
@@ -224,7 +238,63 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
             # into it immediately, not land on a still-collapsed node that
             # looks like "." did nothing.
             nodes[0].expand()
+
+    def _rebuild_roots(self, paths: list[Path]) -> None:
+        """Same as _display_roots, but for an actual change of *which*
+        root(s) are displayed - posts RootFocusChanged so MainColumn
+        re-scopes the tag pane."""
+        self._display_roots(paths)
         self.post_message(self.RootFocusChanged())
+
+    def set_tag_filter(self, tags: set[str]) -> None:
+        """Applies `tags` as an AND filter (must carry every one) over the
+        sample tree - see filter_paths. The roots themselves aren't
+        changing here (unlike _display_roots), so this re-scans in place
+        rather than tearing the whole tree down and rebuilding it -
+        collapsing every previously-expanded folder back to the top just
+        because the filter changed would look like the browser "lost" the
+        samples that should still be there once the filter's cleared
+        again, rather than just re-showing them.
+        """
+        self.tag_filter = set(tags)
+        snapshot = self._expansion_snapshot(self.root)
+        self.run_worker(
+            self._reapply_tag_filter(snapshot),
+            exclusive=True,
+            group="tag-filter",
+            name="tag-filter",
+        )
+
+    def _expansion_snapshot(self, node: TreeNode[Entry]) -> dict[Path, dict]:
+        """Maps each of `node`'s currently-loaded children to its own
+        snapshot, recursively - the "what was expanded" record
+        _reapply_tag_filter restores after re-scanning from scratch."""
+        return {
+            child.data.path: self._expansion_snapshot(child)
+            for child in node.children
+            if child.data is not None and child.data.loaded
+        }
+
+    async def _reapply_tag_filter(self, snapshot: dict[Path, dict]) -> None:
+        for node in list(self.root.children):
+            child_snapshot = snapshot.get(node.data.path)
+            if child_snapshot is not None:
+                await self._apply_expansion_snapshot(node, child_snapshot)
+
+    async def _apply_expansion_snapshot(
+        self, node: TreeNode[Entry], snapshot: dict[Path, dict]
+    ) -> None:
+        """Re-scans `node`'s children fresh against the current filter,
+        then re-expands and recurses into whichever ones `snapshot` says
+        were expanded before - restoring depth rather than collapsing
+        back to the top just because the filter changed."""
+        node.data.loaded = False
+        await self._load(node)
+        for child_node in node.children:
+            child_snapshot = snapshot.get(child_node.data.path)
+            if child_snapshot is not None:
+                child_node.expand()
+                await self._apply_expansion_snapshot(child_node, child_snapshot)
 
     @property
     def focused_root(self) -> Path | None:
@@ -253,11 +323,30 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
         super().action_cursor_parent()
 
     def filter_paths(self, paths):
+        paths = list(paths)
+        wav_files = [p for p in paths if p.suffix.lower() == ".wav"]
+        # One batched lookup for every wav file in this directory, not one
+        # per file (see tag_store.tags_for_samples) - only needed at all
+        # once a tag filter is active.
+        tags_by_path = tag_store.tags_for_samples(wav_files, self.db_path) if self.tag_filter else {}
         return [
             p
             for p in paths
-            if p.suffix.lower() == ".wav" or (p.is_dir() and _contains_wav(p))
+            if (
+                p.suffix.lower() == ".wav"
+                and self.tag_filter.issubset(tags_by_path.get(str(p), set()))
+            )
+            or (p.is_dir() and self._directory_matches_filter(p))
         ]
+
+    def _directory_matches_filter(self, directory: Path) -> bool:
+        """Whether `directory` still belongs in the tree - has a .wav
+        anywhere beneath it (no filter), or, with a tag filter active, has
+        a .wav anywhere beneath it carrying every filtered tag (hiding a
+        folder with nothing matching, rather than showing it empty)."""
+        if not self.tag_filter:
+            return _contains_wav(directory)
+        return tag_store.any_sample_under_matches_all_tags(directory, self.tag_filter, self.db_path)
 
     def _scan_directory(self, directory: Path) -> list[Path]:
         """Runs in a thread (see on_tree_node_expanded) - iterdir() and

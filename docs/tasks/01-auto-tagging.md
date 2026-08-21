@@ -52,6 +52,29 @@ practice.
 - A comma-separated text entry is also available for typing tags directly, as an alternative to
   selecting from the list.
 
+**Implemented**: `space` in the tag pane toggles the highlighted tag in/out of
+`TagBrowser.selected_tags` (styled `bold green`, same convention as FileBrowser's own multi-
+select), posting `SelectionChanged`; `MainColumn` applies it to the samples pane via
+`FileBrowser.set_tag_filter`. `filter_paths` then requires a file to carry every selected tag
+(`tag_store.tags_for_samples`, one batched query per directory listing rather than one per file)
+and a folder to have at least one such file anywhere beneath it
+(`tag_store.any_sample_under_matches_all_tags`, one SQL query per subtree rather than a
+filesystem walk) - a folder with nothing matching is hidden entirely, same "don't show empty"
+principle as the existing no-`.wav`-anywhere hiding.
+
+Selecting/deselecting re-scans each already-loaded folder in place (`FileBrowser.
+_reapply_tag_filter`/`_apply_expansion_snapshot`) rather than tearing the whole tree down and
+rebuilding it the way `.`/`h` do - an initial version reused `_display_roots` for this, which only
+ever auto-re-expanded a root when there was exactly one configured samples directory. With more
+than one, or with a subfolder expanded a level or two deeper, the previously-visible root/folder
+came back collapsed, looking like the browser "lost" samples that should still be there once the
+filter cleared. The fix snapshots which folders were expanded before re-scanning, then restores
+that same depth against the fresh (filtered) contents, so nothing collapses just because the
+filter changed - it only ever gains or loses individual files/folders per the new filter.
+
+**Not yet implemented**: narrowing the tag list itself to only tags co-occurring in the filtered
+set (the second half of the bullet above), and the comma-separated text-entry alternative.
+
 # browsing: folder view vs flat list
 
 The sample list can be toggled between the existing folder/tree view and a flat list showing just

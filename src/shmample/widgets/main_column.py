@@ -143,3 +143,7 @@ class MainColumn(Vertical):
     def on_file_browser_root_focus_changed(self, message: FileBrowser.RootFocusChanged) -> None:
         browser = self.query_one("#files", FileBrowser)
         self.query_one("#tags", TagBrowser).set_scope(browser.focused_root)
+
+    def on_tag_browser_selection_changed(self, message: TagBrowser.SelectionChanged) -> None:
+        tags = self.query_one("#tags", TagBrowser)
+        self.query_one("#files", FileBrowser).set_tag_filter(tags.selected_tags)

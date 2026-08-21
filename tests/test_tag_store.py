@@ -1,6 +1,7 @@
 import contextlib
 
 from shmample.tag_store import (
+    any_sample_under_matches_all_tags,
     auto_assign_tag,
     auto_assign_tag_batch,
     connect,
@@ -8,6 +9,7 @@ from shmample.tag_store import (
     remove_tag_from_sample,
     tag_counts,
     tags_for_sample,
+    tags_for_samples,
 )
 
 
@@ -196,6 +198,53 @@ def test_tag_counts_scoped_to_a_root_does_not_match_a_sibling_with_a_similar_pre
     auto_assign_tag(pack_ab / "kick.wav", "kick", db_path)
 
     assert tag_counts(db_path, root=pack_a) == []
+
+
+def test_tags_for_samples_batches_the_lookup(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    kick = tmp_path / "kick.wav"
+    snare = tmp_path / "snare.wav"
+    untagged = tmp_path / "untagged.wav"
+    auto_assign_tag(kick, "kick", db_path)
+    auto_assign_tag(kick, "808", db_path)
+    auto_assign_tag(snare, "snare", db_path)
+
+    result = tags_for_samples([kick, snare, untagged], db_path)
+
+    assert result == {str(kick): {"kick", "808"}, str(snare): {"snare"}}
+
+
+def test_tags_for_samples_with_no_paths_makes_no_query_and_returns_empty(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    assert tags_for_samples([], db_path) == {}
+
+
+def test_any_sample_under_matches_all_tags_requires_every_tag_on_one_sample(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    pack = tmp_path / "Pack"
+    # kick.wav has both tags together; snare.wav has only one of them -
+    # the AND has to hold on a single sample, not just somewhere in scope.
+    auto_assign_tag(pack / "kick.wav", "kick", db_path)
+    auto_assign_tag(pack / "kick.wav", "808", db_path)
+    auto_assign_tag(pack / "snare.wav", "808", db_path)
+
+    assert any_sample_under_matches_all_tags(pack, {"kick", "808"}, db_path) is True
+    assert any_sample_under_matches_all_tags(pack, {"snare", "808"}, db_path) is False
+
+
+def test_any_sample_under_matches_all_tags_respects_the_root_boundary(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    pack_a = tmp_path / "PackA"
+    pack_ab = tmp_path / "PackAB"
+    auto_assign_tag(pack_ab / "kick.wav", "kick", db_path)
+
+    assert any_sample_under_matches_all_tags(pack_a, {"kick"}, db_path) is False
+    assert any_sample_under_matches_all_tags(pack_ab, {"kick"}, db_path) is True
+
+
+def test_any_sample_under_matches_all_tags_with_no_tags_is_always_true(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    assert any_sample_under_matches_all_tags(tmp_path, set(), db_path) is True
 
 
 def test_tags_for_sample_keeps_different_samples_independent(tmp_path):

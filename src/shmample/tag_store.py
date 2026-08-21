@@ -212,3 +212,63 @@ def tags_for_sample(sample_path: Path, db_path: Path = DEFAULT_DB_PATH) -> set[s
             (str(sample_path),),
         ).fetchall()
     return {name for (name,) in rows}
+
+
+def tags_for_samples(
+    sample_paths: list[Path], db_path: Path = DEFAULT_DB_PATH
+) -> dict[str, set[str]]:
+    """Active tags for each of `sample_paths`, keyed by the plain path
+    string - the batch equivalent of tags_for_sample, one query instead of
+    one per file. Used when filtering a directory listing (see
+    FileBrowser.filter_paths) so scanning a folder with thousands of files
+    doesn't mean thousands of round trips. A path with no active tags is
+    simply absent from the result rather than mapped to an empty set."""
+    if not sample_paths:
+        return {}
+    with contextlib.closing(_connect(db_path)) as connection:
+        placeholders = ",".join("?" for _ in sample_paths)
+        rows = connection.execute(
+            f"""
+            SELECT sample_tags.sample_path, tags.name
+            FROM sample_tags
+            JOIN tags ON tags.id = sample_tags.tag_id
+            WHERE sample_tags.active = 1 AND tags.active = 1
+                AND sample_tags.sample_path IN ({placeholders})
+            """,
+            [str(path) for path in sample_paths],
+        ).fetchall()
+    result: dict[str, set[str]] = {}
+    for sample_path, tag_name in rows:
+        result.setdefault(sample_path, set()).add(tag_name)
+    return result
+
+
+def any_sample_under_matches_all_tags(
+    root: Path, tags: set[str], db_path: Path = DEFAULT_DB_PATH
+) -> bool:
+    """True if at least one sample at/under `root` (same exact-match-or-
+    `/`-bounded-prefix rule as tag_counts) carries every tag in `tags`.
+    One query regardless of how large the subtree is - used to decide
+    whether a folder should still show up once a tag filter is active
+    (see FileBrowser.filter_paths), rather than walking the filesystem and
+    querying per file. `tags` empty means "no filter", trivially true."""
+    if not tags:
+        return True
+    with contextlib.closing(_connect(db_path)) as connection:
+        prefix = str(root)
+        placeholders = ",".join("?" for _ in tags)
+        row = connection.execute(
+            f"""
+            SELECT 1
+            FROM sample_tags
+            JOIN tags ON tags.id = sample_tags.tag_id
+            WHERE sample_tags.active = 1 AND tags.active = 1
+                AND tags.name IN ({placeholders})
+                AND (sample_tags.sample_path = ? OR sample_tags.sample_path LIKE ? ESCAPE '\\')
+            GROUP BY sample_tags.sample_path
+            HAVING COUNT(DISTINCT tags.name) = ?
+            LIMIT 1
+            """,
+            (*tags, prefix, f"{_escape_like(prefix)}/%", len(tags)),
+        ).fetchone()
+    return row is not None
