@@ -158,6 +158,11 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
         lets MainColumn refresh the tag pane and re-show the current
         preview without FileBrowser needing to know about either."""
 
+    class RootFocusChanged(Message):
+        """Posted whenever the displayed root(s) change via "."/the
+        focus-popping side of "h" (see _rebuild_roots) - lets MainColumn
+        re-scope the tag pane to FileBrowser's own focused_root."""
+
     def __init__(
         self,
         samples_directories: list[Path],
@@ -219,6 +224,16 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
             # into it immediately, not land on a still-collapsed node that
             # looks like "." did nothing.
             nodes[0].expand()
+        self.post_message(self.RootFocusChanged())
+
+    @property
+    def focused_root(self) -> Path | None:
+        """The single folder currently focused on via "." (see
+        _root_focus_stack), or None when showing the full configured list
+        - what MainColumn scopes the tag pane to."""
+        if not self._root_focus_stack:
+            return None
+        return self.root.children[0].data.path
 
     def action_focus_cursor_folder(self) -> None:
         node = self.cursor_node

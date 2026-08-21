@@ -1,5 +1,7 @@
 from shmample.app import ShmampleApp
+from shmample.tag_store import auto_assign_tag
 from shmample.widgets.file_browser import FileBrowser
+from shmample.widgets.tag_browser import TagBrowser
 
 
 def _labels(nodes):
@@ -170,3 +172,37 @@ async def test_add_and_remove_path_are_disabled_while_focused(tmp_path):
 
         assert browser.check_action("add_samples_directory", ()) is False
         assert browser.check_action("remove_samples_directory", ()) is False
+
+
+def _tag_labels(tag_browser):
+    return [str(item.query_one("Label").render()) for item in tag_browser.children]
+
+
+async def test_focusing_a_folder_scopes_the_tag_pane_to_it(tmp_path):
+    _fixture(tmp_path)
+    db_path = tmp_path / "shmample.db"
+    auto_assign_tag(tmp_path / "PackA" / "Kick" / "bd.wav", "kick", db_path)
+    auto_assign_tag(tmp_path / "PackB" / "snare.wav", "snare", db_path)
+
+    app = ShmampleApp(samples_directories=[tmp_path], db_path=db_path)
+    async with app.run_test() as pilot:
+        browser = app.query_one("#files", FileBrowser)
+        tags = app.query_one("#tags", TagBrowser)
+        root_node = await _expanded_root(browser, pilot)
+        browser.focus()
+
+        assert _tag_labels(tags) == ["kick (1)", "snare (1)"]
+
+        browser.move_cursor(_node(root_node, "PackA"))
+        await pilot.pause()
+        await pilot.press(".")
+        await pilot.pause()
+
+        assert tags.scope == tmp_path / "PackA"
+        assert _tag_labels(tags) == ["kick (1)"]
+
+        await pilot.press("h")
+        await pilot.pause()
+
+        assert tags.scope is None
+        assert _tag_labels(tags) == ["kick (1)", "snare (1)"]

@@ -65,6 +65,27 @@ async def test_deleted_tag_drops_out_of_the_list(tmp_path):
         assert _labels(tags) == ["snare (1)"]
 
 
+async def test_set_scope_narrows_the_listing_to_that_folder(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    pack_a = tmp_path / "PackA"
+    pack_b = tmp_path / "PackB"
+    auto_assign_tag(pack_a / "kick.wav", "kick", db_path)
+    auto_assign_tag(pack_b / "snare.wav", "snare", db_path)
+
+    app = TagBrowserApp(db_path)
+    async with app.run_test() as pilot:
+        tags = app.query_one(TagBrowser)
+        assert _labels(tags) == ["kick (1)", "snare (1)"]
+
+        tags.set_scope(pack_a)
+        await pilot.pause()
+        assert _labels(tags) == ["kick (1)"]
+
+        tags.set_scope(None)
+        await pilot.pause()
+        assert _labels(tags) == ["kick (1)", "snare (1)"]
+
+
 async def test_vim_keys_navigate(tmp_path):
     db_path = tmp_path / "shmample.db"
     auto_assign_tag(Path("kick.wav"), "kick", db_path)

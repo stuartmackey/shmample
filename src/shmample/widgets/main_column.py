@@ -139,3 +139,7 @@ class MainColumn(Vertical):
             preview.show(node.data.path)
         else:
             preview.show(None)
+
+    def on_file_browser_root_focus_changed(self, message: FileBrowser.RootFocusChanged) -> None:
+        browser = self.query_one("#files", FileBrowser)
+        self.query_one("#tags", TagBrowser).set_scope(browser.focused_root)

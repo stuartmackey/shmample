@@ -155,6 +155,49 @@ def test_tag_counts_excludes_a_deleted_tag_entirely(tmp_path):
     assert tag_counts(db_path) == []
 
 
+def test_tag_counts_scoped_to_a_root_only_counts_samples_under_it(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    pack_a = tmp_path / "PackA"
+    pack_b = tmp_path / "PackB"
+    auto_assign_tag(pack_a / "kick.wav", "kick", db_path)
+    auto_assign_tag(pack_a / "snare.wav", "snare", db_path)
+    auto_assign_tag(pack_b / "kick.wav", "kick", db_path)
+
+    assert tag_counts(db_path, root=pack_a) == [("kick", 1), ("snare", 1)]
+    assert tag_counts(db_path, root=pack_b) == [("kick", 1)]
+
+
+def test_tag_counts_scoped_to_a_root_drops_tags_with_no_samples_in_scope(tmp_path):
+    # Unlike the unscoped listing, a tag entirely outside the scope isn't
+    # shown at all - not even as "(0)".
+    db_path = tmp_path / "shmample.db"
+    pack_a = tmp_path / "PackA"
+    pack_b = tmp_path / "PackB"
+    auto_assign_tag(pack_a / "kick.wav", "kick", db_path)
+    auto_assign_tag(pack_b / "snare.wav", "snare", db_path)
+
+    assert tag_counts(db_path, root=pack_a) == [("kick", 1)]
+
+
+def test_tag_counts_scoped_to_a_root_matches_the_root_itself(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    kick = tmp_path / "kick.wav"
+    auto_assign_tag(kick, "kick", db_path)
+
+    assert tag_counts(db_path, root=kick) == [("kick", 1)]
+
+
+def test_tag_counts_scoped_to_a_root_does_not_match_a_sibling_with_a_similar_prefix(tmp_path):
+    # "/tmp/.../PackA" shouldn't match "/tmp/.../PackAB/..." - a naive
+    # string-prefix check would get this wrong.
+    db_path = tmp_path / "shmample.db"
+    pack_a = tmp_path / "PackA"
+    pack_ab = tmp_path / "PackAB"
+    auto_assign_tag(pack_ab / "kick.wav", "kick", db_path)
+
+    assert tag_counts(db_path, root=pack_a) == []
+
+
 def test_tags_for_sample_keeps_different_samples_independent(tmp_path):
     db_path = tmp_path / "shmample.db"
     kick = tmp_path / "kick.wav"

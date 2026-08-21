@@ -12,6 +12,14 @@ class TagBrowser(ListView, VimGoToTopAndBottom):
     (01-auto-tagging.md's dedicated tag pane) - for now just the listing;
     selecting a tag to filter the sample list is a later step.
 
+    Scoped to whatever folder the samples pane is currently focused on
+    (see FileBrowser's "."/"h" root-focus feature) via set_scope - MainColumn
+    calls that whenever the focused root changes. Unscoped (the default)
+    shows every tag in the whole library, including ones with no samples
+    currently under them; scoped to a folder, a tag with no samples in
+    that folder is left off entirely rather than shown as "(0)" (see
+    tag_store.tag_counts).
+
     Vertical-only, like ConfigList, so it only needs vim's j/k/gg/G.
     """
 
@@ -29,13 +37,18 @@ class TagBrowser(ListView, VimGoToTopAndBottom):
         # database file as the sample preview cache - one attribute for
         # tests to monkeypatch, not two that could drift apart.
         self.db_path = db_path if db_path is not None else sample_store.DEFAULT_DB_PATH
+        self.scope: Path | None = None
 
     def on_mount(self) -> None:
         self.refresh_list()
 
+    def set_scope(self, scope: Path | None) -> None:
+        self.scope = scope
+        self.refresh_list()
+
     def refresh_list(self) -> None:
         previous_index = self.index
-        counts = tag_store.tag_counts(self.db_path)
+        counts = tag_store.tag_counts(self.db_path, root=self.scope)
 
         self.clear()
         if not counts:

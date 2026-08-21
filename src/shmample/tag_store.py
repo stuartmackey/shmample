@@ -146,22 +146,57 @@ def delete_tag(tag_name: str, db_path: Path = DEFAULT_DB_PATH) -> None:
             )
 
 
-def tag_counts(db_path: Path = DEFAULT_DB_PATH) -> list[tuple[str, int]]:
+def _escape_like(text: str) -> str:
+    """Escapes sqlite LIKE's own wildcards (%, _) in a literal value that's
+    about to be used as a LIKE pattern prefix - a root path containing
+    either character (rare, but not impossible) shouldn't be treated as a
+    wildcard."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def tag_counts(db_path: Path = DEFAULT_DB_PATH, root: Path | None = None) -> list[tuple[str, int]]:
     """Every active tag with the number of samples currently carrying it
     (soft-deleted tags and soft-deleted pairings both excluded), sorted by
-    name - the listing the tag browser pane shows."""
+    name - the listing the tag browser pane shows.
+
+    With `root` given, only counts samples at or under that path (an exact
+    match, or a path prefix ending on a `/` boundary - "/a/PackA" matches
+    "/a/PackA/kick.wav" but not "/a/PackAB/kick.wav"), and drops any tag
+    left with zero samples in that scope entirely - unlike the unscoped
+    listing, which keeps a currently-unused tag visible (see
+    test_tag_counts_excludes_a_removed_pairing_but_keeps_the_tag). A
+    scoped view is about "what's actually in this folder", not the full
+    set of tags that exist anywhere in the library.
+    """
     with contextlib.closing(_connect(db_path)) as connection:
-        rows = connection.execute(
-            """
-            SELECT tags.name, COUNT(sample_tags.sample_path)
-            FROM tags
-            LEFT JOIN sample_tags
-                ON sample_tags.tag_id = tags.id AND sample_tags.active = 1
-            WHERE tags.active = 1
-            GROUP BY tags.id
-            ORDER BY tags.name
-            """
-        ).fetchall()
+        if root is None:
+            rows = connection.execute(
+                """
+                SELECT tags.name, COUNT(sample_tags.sample_path)
+                FROM tags
+                LEFT JOIN sample_tags
+                    ON sample_tags.tag_id = tags.id AND sample_tags.active = 1
+                WHERE tags.active = 1
+                GROUP BY tags.id
+                ORDER BY tags.name
+                """
+            ).fetchall()
+        else:
+            prefix = str(root)
+            rows = connection.execute(
+                """
+                SELECT tags.name, COUNT(sample_tags.sample_path)
+                FROM tags
+                LEFT JOIN sample_tags
+                    ON sample_tags.tag_id = tags.id AND sample_tags.active = 1
+                    AND (sample_tags.sample_path = ? OR sample_tags.sample_path LIKE ? ESCAPE '\\')
+                WHERE tags.active = 1
+                GROUP BY tags.id
+                HAVING COUNT(sample_tags.sample_path) > 0
+                ORDER BY tags.name
+                """,
+                (prefix, f"{_escape_like(prefix)}/%"),
+            ).fetchall()
     return [(name, count) for name, count in rows]
 
 

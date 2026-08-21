@@ -86,10 +86,15 @@ the folder picker (`widgets/directory_picker.py:38-54`): once the tree's own roo
 previously-displayed root list so `h` can pop back out one level at a time; `.` is a no-op on a
 file or on the already-sole displayed root. Adding/removing a configured samples directory
 (`A`/`D`) is disabled while focused, rather than mutating `samples_directories` from what's meant
-to be a temporary view. **Not yet wired up**: recalculating the tag list/counts to the focused
-scope, since there's no per-scope query in `tag_store` yet (`tag_counts` still covers the whole
-library) - and the flat-list view itself doesn't exist yet either (see "browsing: folder view vs
-flat list" above). Both stay on `.`'s to-do list for when those features land.
+to be a temporary view. `tag_store.tag_counts(db_path, root=...)` now takes an optional scope
+(exact match or a `/`-bounded path prefix, so `PackA` doesn't wrongly match `PackAB`) and, unlike
+the unscoped listing, drops a tag entirely once it has zero samples in that scope rather than
+showing it as "(0)" - a scoped view is about what's actually in this folder, not the full set of
+tags that exist anywhere. `TagBrowser.set_scope`/`.scope` hold the pane's current scope;
+`FileBrowser` posts `RootFocusChanged` on every "."/"h" re-root, and `MainColumn` reacts by
+calling `set_scope(browser.focused_root)` - `None` once back at the unfocused full-library view.
+**Not yet wired up**: the flat-list view itself doesn't exist yet (see "browsing: folder view vs
+flat list" above), so this scoping only affects the tag pane for now, not a flat sample list.
 
 # auto tagging
 
