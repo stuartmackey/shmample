@@ -38,7 +38,19 @@ async def test_files_are_filtered_out(tmp_path):
         assert labels == ["sub"]
 
 
-async def test_ctrl_s_chooses_the_highlighted_directory(tmp_path):
+async def test_hidden_folders_are_filtered_out(tmp_path):
+    directory = _make_tree(tmp_path)
+    (directory / ".git").mkdir()
+    app = PickerApp()
+    async with app.run_test() as pilot:
+        app.open_picker(directory)
+        await pilot.pause()
+        tree = app.screen.query_one(DirectoryTree)
+        labels = [str(n.label) for n in tree.root.children]
+        assert labels == ["sub"]
+
+
+async def test_a_chooses_the_highlighted_directory(tmp_path):
     directory = _make_tree(tmp_path)
     app = PickerApp()
     async with app.run_test() as pilot:
@@ -49,7 +61,7 @@ async def test_ctrl_s_chooses_the_highlighted_directory(tmp_path):
         tree.move_cursor(sub_node)
         await pilot.pause()
 
-        await pilot.press("ctrl+s")
+        await pilot.press("a")
         await pilot.pause()
 
         assert app.result == directory / "sub"
@@ -90,3 +102,40 @@ async def test_vim_keys_navigate(tmp_path):
         await pilot.press("h")  # vim "up a level" -> parent
         await pilot.pause()
         assert tree.cursor_node is tree.root
+
+
+async def test_h_at_root_reroots_to_the_parent_directory(tmp_path):
+    """Once the cursor is on the tree's own root, "up a level" has
+    nowhere to go within the tree - it should re-root onto the real
+    filesystem parent instead, so a folder outside the start directory
+    (e.g. a drive mounted elsewhere) is still reachable."""
+    directory = _make_tree(tmp_path)
+    app = PickerApp()
+    async with app.run_test() as pilot:
+        app.open_picker(directory)
+        await pilot.pause()
+        tree = app.screen.query_one(DirectoryTree)
+        tree.focus()
+        await pilot.pause()
+        assert tree.cursor_node is tree.root
+
+        await pilot.press("h")
+        await pilot.pause()
+
+        assert tree.path == directory.parent
+
+
+async def test_h_at_filesystem_root_is_a_no_op():
+    app = PickerApp()
+    async with app.run_test() as pilot:
+        app.open_picker(Path("/"))
+        await pilot.pause()
+        tree = app.screen.query_one(DirectoryTree)
+        tree.focus()
+        await pilot.pause()
+        assert tree.cursor_node is tree.root
+
+        await pilot.press("h")
+        await pilot.pause()
+
+        assert tree.path == Path("/")

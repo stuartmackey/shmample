@@ -5,6 +5,7 @@ from pathlib import Path
 
 from rich.style import Style
 from rich.text import Text
+from textual import events
 from textual.binding import Binding
 from textual.widgets import Tree
 from textual.widgets._tree import TOGGLE_STYLE  # no public re-export of this small style constant
@@ -122,6 +123,11 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
         Binding("h", "cursor_parent", "Parent (vim)", show=False),
         Binding("l", "toggle_node", "Expand/collapse (vim)", show=False),
         Binding("p", "preview_cursor_node", "Preview", show=False),
+        # Same action as Tree's own built-in "enter" binding (select_cursor)
+        # - overridden only to make it visible in the footer, since
+        # otherwise there's no hint at all that return plays the
+        # highlighted sample (it still just expands/collapses a folder).
+        Binding("enter", "select_cursor", "Preview"),
         Binding("a", "start_assign", "Assign"),
         Binding("A", "add_samples_directory", "Add path"),
         Binding("D", "remove_samples_directory", "Remove path"),
@@ -207,6 +213,22 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
     def on_tree_node_collapsed(self, event: Tree.NodeCollapsed[Entry]) -> None:
         if event.node is self._expanded_root_node:
             self._expanded_root_node = None
+
+    def on_focus(self, event: events.Focus) -> None:
+        # Tree's own cursor starts at -1 (nothing highlighted) until the
+        # first arrow/vim-key press - jumping here via a numbered pane
+        # shortcut (see app.py) would otherwise focus the pane but show
+        # no highlighted row at all. Only kicks in on that untouched
+        # state, not every focus - once the cursor's actually somewhere,
+        # tabbing away and back shouldn't reset it back to the top.
+        if self.cursor_line == -1 and self.root.children:
+            self.move_cursor(self.root.children[0])
+
+    def on_tree_node_highlighted(self, event: Tree.NodeHighlighted[Entry]) -> None:
+        # check_action's "remove_samples_directory" answer depends on
+        # which node the cursor's on - tell the footer to re-ask as it
+        # moves, same as DevicePanel does when its own state changes.
+        self.refresh_bindings()
 
     # Recolours the label in place rather than prefixing a marker (e.g.
     # "✓ ") - a prefix shifts every filename in the tree a couple of
@@ -357,10 +379,24 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
 
         self.app.push_screen(DirectoryPickerModal(Path.home()), handle_result)
 
-    def action_remove_samples_directory(self) -> None:
+    def _cursor_on_root_path(self) -> TreeNode[Entry] | None:
+        """The cursor's node, but only if it's a root path itself (a
+        direct child of the hidden self.root) - not a file/subfolder
+        under one, where removing "the path" wouldn't be meaningful."""
         node = self.cursor_node
-        if node is None or node.parent is not self.root or node.data is None:
-            return  # only meaningful on a root path itself, not a file/subfolder under it
+        if node is not None and node.parent is self.root and node.data is not None:
+            return node
+        return None
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "remove_samples_directory":
+            return self._cursor_on_root_path() is not None
+        return True
+
+    def action_remove_samples_directory(self) -> None:
+        node = self._cursor_on_root_path()
+        if node is None:
+            return
         self.samples_directories.remove(node.data.path)
         self._persist_samples_directories()
         if self._expanded_root_node is node:

@@ -67,6 +67,41 @@ async def test_root_nodes_are_labelled_by_full_path_and_start_collapsed(samples_
         assert not browser.root.children[0].is_expanded
 
 
+async def test_focusing_the_browser_highlights_the_first_root_node(samples_dir):
+    app = ShmampleApp(samples_directories=[samples_dir])
+    async with app.run_test() as pilot:
+        browser = app.query_one("#files", FileBrowser)
+        assert browser.cursor_line == -1  # untouched, nothing highlighted yet
+
+        browser.focus()
+        await pilot.pause()
+
+        assert browser.cursor_node is browser.root.children[0]
+
+
+async def test_refocusing_the_browser_keeps_an_already_moved_cursor(tmp_path):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    app = ShmampleApp(samples_directories=[first, second])
+    async with app.run_test() as pilot:
+        browser = app.query_one("#files", FileBrowser)
+        configs = app.query_one("#configurations")
+
+        browser.focus()
+        await pilot.pause()
+        browser.move_cursor(browser.root.children[1])
+        await pilot.pause()
+
+        configs.focus()  # away...
+        await pilot.pause()
+        browser.focus()  # ...and back
+        await pilot.pause()
+
+        assert browser.cursor_node is browser.root.children[1]
+
+
 async def test_multiple_configured_directories_each_get_their_own_root_node(tmp_path):
     first = tmp_path / "first"
     second = tmp_path / "second"
@@ -397,7 +432,7 @@ async def test_shift_a_adds_a_new_root_and_persists_it(tmp_path, monkeypatch):
         my_samples_node = next(n for n in tree.root.children if "MySamples" in str(n.label))
         tree.move_cursor(my_samples_node)
         await pilot.pause()
-        await pilot.press("ctrl+s")
+        await pilot.press("a")
         await pilot.pause()
 
         assert _labels(browser.root.children) == [str(new_samples)]
@@ -460,6 +495,24 @@ async def test_shift_d_on_a_file_or_folder_does_nothing(samples_dir, tmp_path):
 
         assert _labels(browser.root.children) == [str(samples_dir)]
         assert browser.samples_directories == [samples_dir]
+
+
+async def test_check_action_hides_remove_path_off_a_root(samples_dir, tmp_path):
+    settings_path = tmp_path / "settings.json"
+    app = ShmampleApp(samples_directories=[samples_dir], settings_path=settings_path)
+    async with app.run_test() as pilot:
+        browser = app.query_one("#files", FileBrowser)
+        root_node = await _root(browser, pilot, samples_dir)
+        kick_node = _node(root_node, "kick.wav")
+        browser.focus()
+
+        browser.move_cursor(root_node)
+        await pilot.pause()
+        assert browser.check_action("remove_samples_directory", ()) is True
+
+        browser.move_cursor(kick_node)
+        await pilot.pause()
+        assert browser.check_action("remove_samples_directory", ()) is False
 
 
 async def test_shift_d_collapsing_the_expanded_root_clears_the_accordion_state(tmp_path):

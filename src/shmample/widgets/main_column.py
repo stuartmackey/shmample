@@ -2,6 +2,7 @@ from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.containers import Vertical
+from textual.timer import Timer
 from textual.widgets import Tree
 
 from shmample import config_store
@@ -9,6 +10,13 @@ from shmample.widgets.config_list import ConfigList
 from shmample.widgets.device_panel import DevicePanel
 from shmample.widgets.file_browser import FileBrowser
 from shmample.widgets.preview_info import PreviewInfo
+
+# How long the cursor has to sit still on a file before its preview
+# (stat + duration/format probe + waveform decode, see PreviewInfo.show)
+# actually loads - scrolling quickly through the tree would otherwise
+# generate one of these, synchronously on the UI thread, per file
+# briefly passed over, which is what made scrolling feel sluggish.
+PREVIEW_DEBOUNCE_SECONDS = 0.15
 
 
 class MainColumn(Vertical):
@@ -64,6 +72,7 @@ class MainColumn(Vertical):
             else config_store.DEFAULT_CONFIGURATIONS_DIR
         )
         self.settings_path = settings_path
+        self._preview_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         device_panel = DevicePanel(id="device")
@@ -83,9 +92,17 @@ class MainColumn(Vertical):
         yield preview
 
     def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
+        if self._preview_timer is not None:
+            self._preview_timer.stop()
+            self._preview_timer = None
+
         node = event.node
         preview = self.query_one(PreviewInfo)
         if node.data is not None and not node.allow_expand:
-            preview.show(node.data.path)
+            path = node.data.path
+            self._preview_timer = self.set_timer(
+                PREVIEW_DEBOUNCE_SECONDS, lambda: preview.show(path)
+            )
         else:
+            # Cheap (just clears the pane) - no need to debounce this side.
             preview.show(None)

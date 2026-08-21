@@ -28,16 +28,42 @@ class _DirsOnlyDirectoryTree(DirectoryTree):
     ]
 
     def filter_paths(self, paths):
-        return [p for p in paths if p.is_dir()]
+        # Hidden folders (.config, .cache, .git, ...) are rarely where
+        # samples live and clutter every listing once "up a level"
+        # reaches somewhere like $HOME, so they're filtered out here
+        # alongside files rather than just left for the user to skip
+        # past.
+        return [p for p in paths if p.is_dir() and not p.name.startswith(".")]
+
+    def action_cursor_parent(self) -> None:
+        """Move to the parent node, same as Tree's own action - except
+        once the cursor's already on this tree's root, where Tree's
+        version has nowhere left to go. Re-roots the tree one level up
+        the real filesystem instead, so starting confined to (say) the
+        user's home directory doesn't also mean being unable to ever
+        reach a sibling like a mounted drive under /run/media/<user>/ -
+        repeated use eventually reaches the filesystem root, at which
+        point going further up is a no-op (its own parent is itself).
+        """
+        cursor_node = self.cursor_node
+        if cursor_node is not None and cursor_node.parent is not None:
+            self.move_cursor(cursor_node.parent, animate=True)
+            return
+        parent_dir = self.path.parent
+        if parent_dir != self.path:
+            self.path = parent_dir
 
 
 class DirectoryPickerModal(ModalScreen[Path | None]):
     """Shift+A's folder browser (see FileBrowser.action_add_samples_directory)
     - its own confined DirectoryTree, since this app has no other way to
-    point at an arbitrary path than navigating to it. Enter still means
-    "expand/collapse" here, matching FileBrowser's own convention
+    point at an arbitrary path than navigating to it. Enter/space still
+    mean "expand/collapse" here, matching FileBrowser's own convention
     elsewhere in the app, so "choose this folder" needs a separate key -
-    ctrl+s, mirroring NewConfigurationModal's own escape/ctrl+s scheme.
+    "a", not ctrl+s (NewConfigurationModal's choice for the same "confirm"
+    role): most terminals treat ctrl+s as the XOFF flow-control character
+    unless the user has disabled that themselves (`stty -ixon`), so it
+    can silently freeze output instead of reaching the app at all.
     """
 
     DEFAULT_CSS = """
@@ -57,7 +83,7 @@ class DirectoryPickerModal(ModalScreen[Path | None]):
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
-        Binding("ctrl+s", "choose", "Choose folder"),
+        Binding("a", "choose", "Choose folder"),
     ]
 
     def __init__(self, start_directory: Path) -> None:
@@ -68,7 +94,9 @@ class DirectoryPickerModal(ModalScreen[Path | None]):
         with Vertical():
             tree = _DirsOnlyDirectoryTree(self._start_directory)
             tree.border_title = "Choose a folder"
-            tree.border_subtitle = "ctrl+s: choose  esc: cancel"
+            tree.border_subtitle = (
+                "enter/space: open   h: up a level   a: choose folder   esc: cancel"
+            )
             yield tree
 
     def on_mount(self) -> None:
