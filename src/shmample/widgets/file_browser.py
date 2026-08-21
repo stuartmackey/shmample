@@ -76,6 +76,18 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
     below the open root can still expand/collapse freely among
     themselves; the accordion only applies at the root level.
 
+    "." on a folder narrows the displayed root(s) down to just that
+    subfolder (01-auto-tagging.md's "focusing a subfolder") - a view-level
+    change only, `self.samples_directories` (the persisted config) is
+    untouched. `_root_focus_stack` remembers what was displayed before
+    each narrowing, so "h" pressed with nowhere left to go within the
+    current scope (see action_cursor_parent) pops back out one level at a
+    time, same "re-root up once you hit the top" idea as
+    `_DirsOnlyDirectoryTree.action_cursor_parent` in directory_picker.py.
+    Adding/removing a configured samples directory is disabled while
+    focused (see check_action) - both would otherwise mutate the real
+    config from within what's meant to be a temporary, view-only scope.
+
     Tree has no left/right cursor concept (it's not a grid), so h/l map to
     the nearest vim-flavoured equivalents - jump to parent, toggle node -
     rather than a direct equivalent of DataTable's cursor_left/cursor_right.
@@ -134,6 +146,7 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
         Binding("A", "add_samples_directory", "Add path"),
         Binding("D", "remove_samples_directory", "Remove path"),
         Binding("t", "auto_tag_cursor_node", "Auto-tag"),
+        Binding(".", "focus_cursor_folder", "Focus folder"),
         # Replaces Tree's own "space" (toggle_node) entirely, not just
         # for files - action_toggle_select_or_node below falls back to
         # the original expand/collapse behaviour for a folder.
@@ -181,11 +194,48 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
         # children each time, since collapsing it is exactly what needs
         # doing on the *next* expand elsewhere (see on_tree_node_expanded).
         self._expanded_root_node: TreeNode[Entry] | None = None
+        # Each entry is the list of root paths that were displayed just
+        # before a "." narrowed the view further - see
+        # action_focus_cursor_folder/action_cursor_parent. Empty means
+        # "showing the full configured list", not "focused".
+        self._root_focus_stack: list[list[Path]] = []
         for directory in self.samples_directories:
             self._add_root_node(directory)
 
     def _add_root_node(self, directory: Path) -> TreeNode[Entry]:
         return self.root.add(str(directory), data=Entry(directory), allow_expand=True)
+
+    def _rebuild_roots(self, paths: list[Path]) -> None:
+        """Replaces whatever's currently displayed at the root level with
+        `paths` - used by both focusing into a subfolder and popping back
+        out of one. Never touches `self.samples_directories`."""
+        self.root.remove_children()
+        self._expanded_root_node = None
+        nodes = [self._add_root_node(path) for path in paths]
+        self.move_cursor(nodes[0])
+        if len(nodes) == 1:
+            # A freshly focused (or popped-back-to-still-focused) single
+            # root expands straight away - the point of focusing is to see
+            # into it immediately, not land on a still-collapsed node that
+            # looks like "." did nothing.
+            nodes[0].expand()
+
+    def action_focus_cursor_folder(self) -> None:
+        node = self.cursor_node
+        if node is None or node.data is None or not node.allow_expand:
+            return
+        if node.parent is self.root and len(self.root.children) == 1:
+            return  # already the sole displayed root - nothing to narrow
+        current_roots = [child.data.path for child in self.root.children]
+        self._root_focus_stack.append(current_roots)
+        self._rebuild_roots([node.data.path])
+
+    def action_cursor_parent(self) -> None:
+        node = self.cursor_node
+        if node is not None and node.parent is self.root and self._root_focus_stack:
+            self._rebuild_roots(self._root_focus_stack.pop())
+            return
+        super().action_cursor_parent()
 
     def filter_paths(self, paths):
         return [
@@ -451,7 +501,16 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
     def _cursor_on_root_path(self) -> TreeNode[Entry] | None:
         """The cursor's node, but only if it's a root path itself (a
         direct child of the hidden self.root) - not a file/subfolder
-        under one, where removing "the path" wouldn't be meaningful."""
+        under one, where removing "the path" wouldn't be meaningful.
+
+        None while focused on a subfolder (see _root_focus_stack), even
+        though the sole displayed root is technically a direct child of
+        self.root too - it's not necessarily (or even usually) one of the
+        actual configured samples_directories, so removing "the path"
+        isn't meaningful there either.
+        """
+        if self._root_focus_stack:
+            return None
         node = self.cursor_node
         if node is not None and node.parent is self.root and node.data is not None:
             return node
@@ -460,6 +519,8 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action == "remove_samples_directory":
             return self._cursor_on_root_path() is not None
+        if action == "add_samples_directory":
+            return not self._root_focus_stack
         return True
 
     def action_remove_samples_directory(self) -> None:

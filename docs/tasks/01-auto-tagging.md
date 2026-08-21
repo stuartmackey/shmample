@@ -82,6 +82,15 @@ to the full library. Same pattern `_DirsOnlyDirectoryTree.action_cursor_parent` 
 the folder picker (`widgets/directory_picker.py:38-54`): once the tree's own root is reached,
 `h` re-roots one level up rather than becoming a no-op.
 
+**Implemented**, the `.`/`h` re-rooting itself: `FileBrowser._root_focus_stack` remembers each
+previously-displayed root list so `h` can pop back out one level at a time; `.` is a no-op on a
+file or on the already-sole displayed root. Adding/removing a configured samples directory
+(`A`/`D`) is disabled while focused, rather than mutating `samples_directories` from what's meant
+to be a temporary view. **Not yet wired up**: recalculating the tag list/counts to the focused
+scope, since there's no per-scope query in `tag_store` yet (`tag_counts` still covers the whole
+library) - and the flat-list view itself doesn't exist yet either (see "browsing: folder view vs
+flat list" above). Both stay on `.`'s to-do list for when those features land.
+
 # auto tagging
 
 - Bound to `t` in the samples pane. On a file it tags that one sample; on a folder it recursively
