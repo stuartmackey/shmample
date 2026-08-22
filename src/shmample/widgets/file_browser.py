@@ -134,7 +134,7 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
         scrollbar-size-vertical: 1;
 
         & > .directory-tree--folder {
-            color: ansi_cyan;
+            color: $secondary;
             text-style: bold;
         }
 
