@@ -18,6 +18,7 @@ def test_save_and_list_round_trips_all_fields(tmp_path):
         created_at=created,
         modified_at=modified,
         assignments={("A", "1"): "/samples/kick.wav", ("B", "3"): "/samples/snare.wav"},
+        holding=["/samples/tom.wav", "/samples/clap.wav"],
     )
 
     save_configuration(config, tmp_path)
@@ -32,6 +33,24 @@ def test_save_and_list_round_trips_all_fields(tmp_path):
         ("A", "1"): "/samples/kick.wav",
         ("B", "3"): "/samples/snare.wav",
     }
+    assert loaded.holding == ["/samples/tom.wav", "/samples/clap.wav"]
+
+
+def test_holding_defaults_to_empty_list_when_absent_from_saved_json(tmp_path):
+    # Configurations saved before "holding" existed have no such key at
+    # all in their JSON, not an empty one - list_configurations must
+    # still load them rather than raising a KeyError.
+    now = datetime(2026, 1, 1)
+    config = Configuration(name="Old Kit", description="", created_at=now, modified_at=now)
+    save_configuration(config, tmp_path)
+
+    path = next(tmp_path.glob("*.json"))
+    data = json.loads(path.read_text())
+    del data["holding"]
+    path.write_text(json.dumps(data))
+
+    [(_, loaded)] = list_configurations(tmp_path)
+    assert loaded.holding == []
 
 
 def test_filename_derived_from_slugified_name(tmp_path):

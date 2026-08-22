@@ -3,6 +3,7 @@ from shmample.widgets.assignment_grid import AssignmentGrid
 from shmample.widgets.config_list import ConfigList
 from shmample.widgets.device_panel import DevicePanel
 from shmample.widgets.file_browser import FileBrowser
+from shmample.widgets.holding_area import HoldingArea
 from shmample.widgets.preview_info import PreviewInfo
 from shmample.widgets.tag_browser import TagBrowser
 
@@ -26,7 +27,13 @@ async def test_ctrl_hjkl_walks_the_full_pane_layout():
         assert isinstance(app.focused, PreviewInfo)
 
         await pilot.press("ctrl+l")
+        assert isinstance(app.focused, HoldingArea)
+
+        await pilot.press("ctrl+l")
         assert isinstance(app.focused, AssignmentGrid)
+
+        await pilot.press("ctrl+h")
+        assert isinstance(app.focused, HoldingArea)
 
         await pilot.press("ctrl+h")
         assert isinstance(app.focused, ConfigList)
@@ -59,7 +66,7 @@ async def test_backspace_also_moves_left():
         await pilot.pause()
 
         await pilot.press("backspace")
-        assert isinstance(app.focused, ConfigList)
+        assert isinstance(app.focused, HoldingArea)
 
 
 async def test_ctrl_hjkl_does_not_clash_with_pane_own_hjkl_bindings():

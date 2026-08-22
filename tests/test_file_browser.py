@@ -1,13 +1,17 @@
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 from rich.style import Style
 
 from shmample.app import ShmampleApp
+from shmample.config_store import Configuration, save_configuration
 from shmample.settings import load_settings
+from shmample.widgets.assignment_grid import AssignmentGrid
 from shmample.widgets.config_list import ConfigList
 from shmample.widgets.device_panel import DevicePanel
 from shmample.widgets.file_browser import FileBrowser
+from shmample.widgets.holding_area import HoldingArea
 from shmample.widgets.main_column import MainColumn
 from shmample.widgets.preview_info import PreviewInfo
 
@@ -345,10 +349,12 @@ async def test_space_on_a_folder_still_toggles_expand_not_select(samples_dir):
         assert browser.selected == []
 
 
-async def test_space_refuses_a_seventh_selection(many_samples_dir):
+async def test_space_selection_has_no_fixed_cap(many_samples_dir):
+    # Selection used to be capped at 6 (a device bank's pad count), back
+    # when "a" filled a bank directly from the selection. Now that "a"
+    # just adds to the device-agnostic holding area (see HoldingArea),
+    # there's no device shape to cap the selection against any more.
     app = ShmampleApp(samples_directories=[many_samples_dir])
-    notifications = []
-    app.notify = lambda message, **kwargs: notifications.append(message)
     async with app.run_test() as pilot:
         browser = app.query_one("#files", FileBrowser)
         root_node = await _root(browser, pilot, many_samples_dir)
@@ -361,39 +367,8 @@ async def test_space_refuses_a_seventh_selection(many_samples_dir):
             await pilot.press("space")
             await pilot.pause()
 
-        assert len(browser.selected) == 6
-        assert _node(root_node, "sample6.wav") not in browser.selected
-        assert len(notifications) == 1
-        assert "6" in notifications[0]
-
-
-async def test_deselecting_makes_room_for_another_selection(many_samples_dir):
-    app = ShmampleApp(samples_directories=[many_samples_dir])
-    async with app.run_test() as pilot:
-        browser = app.query_one("#files", FileBrowser)
-        root_node = await _root(browser, pilot, many_samples_dir)
-        browser.focus()
-        await pilot.pause()
-
-        for number in range(6):
-            browser.move_cursor(_node(root_node, f"sample{number}.wav"))
-            await pilot.pause()
-            await pilot.press("space")
-            await pilot.pause()
-
-        browser.move_cursor(_node(root_node, "sample0.wav"))
-        await pilot.pause()
-        await pilot.press("space")  # deselect, freeing a slot
-        await pilot.pause()
-
-        browser.move_cursor(_node(root_node, "sample6.wav"))
-        await pilot.pause()
-        await pilot.press("space")
-        await pilot.pause()
-
-        assert len(browser.selected) == 6
+        assert len(browser.selected) == 7
         assert _node(root_node, "sample6.wav") in browser.selected
-        assert _node(root_node, "sample0.wav") not in browser.selected
 
 
 async def test_no_directories_configured_shows_an_empty_tree():
@@ -578,3 +553,151 @@ async def test_panes_split_the_column_height_one_three_one(samples_dir):
         assert configs.outer_size.height == 7
         assert browser.outer_size.height == 21
         assert preview.outer_size.height == 8
+
+
+def _activate_configuration(app: ShmampleApp, name: str = "Kit") -> tuple[Path, Configuration]:
+    """Creates, saves, and loads a configuration into both the holding
+    area and the assignment grid - real usage always loads both from the
+    same ConfigList.Opened message (see app.py's on_config_list_opened),
+    sharing one Configuration object, so a helper that bypasses the UI to
+    set one up keeps that same invariant rather than giving each pane its
+    own independent copy."""
+    now = datetime(2026, 1, 1)
+    config = Configuration(name=name, description="", created_at=now, modified_at=now)
+    holding = app.query_one("#holding", HoldingArea)
+    path = save_configuration(config, holding.configurations_dir)
+    entry = (path, config)
+    holding.load(entry)
+    app.query_one("#assignments", AssignmentGrid).load(entry)
+    return path, config
+
+
+async def test_a_adds_the_cursor_sample_to_the_holding_area(samples_dir):
+    app = ShmampleApp(samples_directories=[samples_dir])
+    async with app.run_test() as pilot:
+        browser = app.query_one("#files", FileBrowser)
+        holding = app.query_one("#holding", HoldingArea)
+        _activate_configuration(app)
+        root_node = await _root(browser, pilot, samples_dir)
+        browser.focus()
+        browser.move_cursor(_node(root_node, "kick.wav"))
+        await pilot.pause()
+
+        await pilot.press("a")
+        await pilot.pause()
+
+        assert holding.configuration.holding == [str(samples_dir / "kick.wav")]
+
+
+async def test_a_without_an_active_configuration_notifies_and_adds_nothing(samples_dir):
+    app = ShmampleApp(samples_directories=[samples_dir])
+    notifications = []
+    app.notify = lambda message, **kwargs: notifications.append(message)
+    async with app.run_test() as pilot:
+        browser = app.query_one("#files", FileBrowser)
+        root_node = await _root(browser, pilot, samples_dir)
+        browser.focus()
+        browser.move_cursor(_node(root_node, "kick.wav"))
+        await pilot.pause()
+
+        await pilot.press("a")
+        await pilot.pause()
+
+        assert len(notifications) == 1
+
+
+async def test_a_on_an_already_held_sample_notifies_without_duplicating(samples_dir):
+    app = ShmampleApp(samples_directories=[samples_dir])
+    notifications = []
+    app.notify = lambda message, **kwargs: notifications.append(message)
+    async with app.run_test() as pilot:
+        browser = app.query_one("#files", FileBrowser)
+        holding = app.query_one("#holding", HoldingArea)
+        _activate_configuration(app)
+        root_node = await _root(browser, pilot, samples_dir)
+        browser.focus()
+        browser.move_cursor(_node(root_node, "kick.wav"))
+        await pilot.pause()
+
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+
+        assert holding.configuration.holding == [str(samples_dir / "kick.wav")]
+        assert len(notifications) == 2
+        assert "already" in notifications[1]
+
+
+async def test_a_with_a_multi_selection_adds_to_holding_in_selection_order(many_samples_dir):
+    app = ShmampleApp(samples_directories=[many_samples_dir])
+    async with app.run_test() as pilot:
+        browser = app.query_one("#files", FileBrowser)
+        holding = app.query_one("#holding", HoldingArea)
+        _activate_configuration(app)
+        root_node = await _root(browser, pilot, many_samples_dir)
+        browser.focus()
+        await pilot.pause()
+
+        # Select sample1 then sample0 (reverse order) - the holding area
+        # should follow that pick order, not tree/alphabetical order.
+        browser.move_cursor(_node(root_node, "sample1.wav"))
+        await pilot.pause()
+        await pilot.press("space")
+        browser.move_cursor(_node(root_node, "sample0.wav"))
+        await pilot.pause()
+        await pilot.press("space")
+        await pilot.pause()
+
+        await pilot.press("a")
+        await pilot.pause()
+
+        assert holding.configuration.holding == [
+            str(many_samples_dir / "sample1.wav"),
+            str(many_samples_dir / "sample0.wav"),
+        ]
+
+
+async def test_a_with_a_multi_selection_clears_selection_markers_after_adding(many_samples_dir):
+    app = ShmampleApp(samples_directories=[many_samples_dir])
+    async with app.run_test() as pilot:
+        browser = app.query_one("#files", FileBrowser)
+        _activate_configuration(app)
+        root_node = await _root(browser, pilot, many_samples_dir)
+        node = _node(root_node, "sample0.wav")
+        browser.focus()
+        browser.move_cursor(node)
+        await pilot.pause()
+        await pilot.press("space")
+        await pilot.pause()
+        assert browser.selected == [node]
+
+        await pilot.press("a")
+        await pilot.pause()
+
+        assert browser.selected == []
+
+
+async def test_a_with_an_active_selection_ignores_the_cursor_file(many_samples_dir):
+    # Regression check for the branch in action_start_assign: with a
+    # selection active, "a" must go through the multi-add path even
+    # though the cursor is sitting on a *different*, unselected file.
+    app = ShmampleApp(samples_directories=[many_samples_dir])
+    async with app.run_test() as pilot:
+        browser = app.query_one("#files", FileBrowser)
+        holding = app.query_one("#holding", HoldingArea)
+        _activate_configuration(app)
+        root_node = await _root(browser, pilot, many_samples_dir)
+        browser.focus()
+        browser.move_cursor(_node(root_node, "sample0.wav"))
+        await pilot.pause()
+        await pilot.press("space")
+        await pilot.pause()
+
+        browser.move_cursor(_node(root_node, "sample1.wav"))  # cursor moves, selection doesn't
+        await pilot.pause()
+
+        await pilot.press("a")
+        await pilot.pause()
+
+        assert holding.configuration.holding == [str(many_samples_dir / "sample0.wav")]

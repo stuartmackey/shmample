@@ -345,35 +345,36 @@ class AssignmentGrid(DataTable, VimGoToTopAndBottom):
                 self.update_cell(letter, str(number), self._cell_text(sample_path))
 
     def assign(self, bank: str, pad: str, sample_path: Path) -> None:
-        # FileBrowser.action_start_assign already refuses to start the
-        # assign chord without an active configuration - this guard is
-        # just so assign() itself can't be misused to write into nothing.
+        # Callers (start_assign_single below, HoldingArea's own "a")
+        # already refuse to start the assign chord without an active
+        # configuration - this guard is just so assign() itself can't be
+        # misused to write into nothing.
         if self.configuration is None:
             return
         self.configuration.assignments[(bank, pad)] = str(sample_path)
         self.update_cell(bank, pad, self._cell_text(sample_path))
         self._save()
 
-    def assign_many(self, bank: str, sample_paths: list[Path]) -> None:
-        """Multi-select assign (FileBrowser._start_assign_selection):
-        replaces *all* of a bank's pad assignments with sample_paths, in
-        order starting at pad 1 - any pad not covered by sample_paths is
-        cleared rather than left holding its old sample. Extra samples
-        past the 6th are silently dropped by zip(); the caller is
-        responsible for telling the user about that (it knows how many
-        were selected, this method only knows about the 6 pads).
+    def start_assign_single(self, sample_path: Path) -> None:
+        """Runs the bank-then-pad picker chord for one sample and calls
+        assign() with the result - the chord itself only needs to live
+        here, the one place that actually owns the grid it writes into.
+        Used by HoldingArea's own "a" binding (assigning something
+        already held onto a real pad).
         """
-        if self.configuration is None:
-            return
-        for number in PAD_NUMBERS:
-            self.configuration.assignments.pop((bank, str(number)), None)
-            self.update_cell(bank, str(number), "-")
-        for number, sample_path in zip(PAD_NUMBERS, sample_paths):
-            self.configuration.assignments[(bank, str(number))] = str(sample_path)
-            self.update_cell(bank, str(number), self._cell_text(sample_path))
-        # One write for the whole bank, not one per pad - assign() above
-        # isn't reused here for exactly that reason.
-        self._save()
+
+        def handle_bank(bank: str | None) -> None:
+            if bank is None:
+                return
+
+            def handle_pad(pad: str | None) -> None:
+                if pad is None:
+                    return
+                self.assign(bank, pad, sample_path)
+
+            self.app.push_screen(PadPickerModal(sample_path.name, bank), handle_pad)
+
+        self.app.push_screen(BankPickerModal(f"'{sample_path.name}'"), handle_bank)
 
     def set_assignments(self, assignments: dict[tuple[str, str], Path]) -> None:
         """Replaces the whole configuration's pad assignments in one shot

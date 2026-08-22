@@ -13,7 +13,6 @@ from shmample.app import ShmampleApp
 from shmample.config_store import Configuration, list_configurations, save_configuration
 from shmample.widgets.assignment_grid import AssignmentGrid, BankPickerModal, PadPickerModal
 from shmample.widgets.config_list import ConfigList
-from shmample.widgets.file_browser import FileBrowser
 from shmample.widgets.preview_info import PreviewInfo
 
 
@@ -312,48 +311,6 @@ async def test_clear_autosaves_to_disk_immediately(tmp_path):
         assert saved[0][1].assignments == {}
 
 
-async def test_assign_many_fills_pads_in_order_and_clears_the_rest(tmp_path):
-    app = AssignmentGridApp(tmp_path)
-    async with app.run_test():
-        grid = app.query_one(AssignmentGrid)
-        _activate_configuration(grid)
-        grid.assign("A", "1", Path("/samples/old.wav"))  # should not survive assign_many
-
-        grid.assign_many("A", [Path("/samples/kick.wav"), Path("/samples/snare.wav")])
-
-        assert _cell_name(grid, "A", "1") == "kick.wav"
-        assert _cell_name(grid, "A", "2") == "snare.wav"
-        for number in range(3, 7):
-            assert _cell_name(grid, "A", str(number)) == "-"
-        assert grid.configuration.assignments == {
-            ("A", "1"): "/samples/kick.wav",
-            ("A", "2"): "/samples/snare.wav",
-        }
-
-
-async def test_assign_many_drops_samples_past_the_sixth_pad(tmp_path):
-    app = AssignmentGridApp(tmp_path)
-    async with app.run_test():
-        grid = app.query_one(AssignmentGrid)
-        _activate_configuration(grid)
-        paths = [Path(f"/samples/s{i}.wav") for i in range(8)]
-
-        grid.assign_many("B", paths)
-
-        for number in range(1, 7):
-            assert _cell_name(grid, "B", str(number)) == f"s{number - 1}.wav"
-        assert len(grid.configuration.assignments) == 6
-
-
-async def test_assign_many_without_an_active_configuration_does_nothing(tmp_path):
-    app = AssignmentGridApp(tmp_path)
-    async with app.run_test():
-        grid = app.query_one(AssignmentGrid)
-        assert grid.configuration is None
-        grid.assign_many("B", [Path("/samples/kick.wav")])
-        assert _cell_name(grid, "B", "1") == "-"
-
-
 async def test_capital_d_with_no_assignments_does_nothing(tmp_path):
     app = AssignmentGridApp(tmp_path)
     async with app.run_test() as pilot:
@@ -481,46 +438,17 @@ async def test_pad_picker_direct_key_picks_immediately():
         assert result == "4"
 
 
-@pytest.fixture
-def samples_dir(tmp_path):
-    (tmp_path / "kick.wav").write_bytes(b"")
-    return tmp_path
-
-
-@pytest.fixture
-def multi_samples_dir(tmp_path):
-    for number in range(8):
-        (tmp_path / f"sample{number}.wav").write_bytes(b"")
-    return tmp_path
-
-
-async def _node(browser, pilot, name):
-    """Finds a sample/folder node by name - each configured samples
-    directory is now its own root-level node (11-sample-paths.md), one
-    level deeper than these fixtures' files used to sit when there was
-    only ever a single samples_directory, and lazily loaded so it needs
-    expanding (and a pause for that to land) before its children exist
-    at all. Assumes exactly one configured directory, as every user of
-    this helper's fixtures does."""
-    root_node = browser.root.children[0]
-    if not root_node.is_expanded:
-        root_node.expand()
-        await pilot.pause()
-    return next(n for n in root_node.children if name in str(n.label))
-
-
-async def test_a_then_bank_then_pad_assigns_the_highlighted_sample(samples_dir):
-    app = ShmampleApp(samples_directories=[samples_dir])
+async def test_start_assign_single_then_bank_then_pad_assigns(tmp_path):
+    # start_assign_single is the chord itself (bank picker, then pad
+    # picker, then assign()) - what used to live in FileBrowser directly
+    # now lives here, since HoldingArea's "a" is the only caller and it
+    # shouldn't need to know how the chord works, only that it exists.
+    app = AssignmentGridApp(tmp_path)
     async with app.run_test() as pilot:
-        browser = app.query_one("#files", FileBrowser)
-        grid = app.query_one("#assignments", AssignmentGrid)
+        grid = app.query_one(AssignmentGrid)
         _activate_configuration(grid)
-        kick_node = await _node(browser, pilot, "kick.wav")
-        browser.focus()
-        browser.move_cursor(kick_node)
-        await pilot.pause()
 
-        await pilot.press("a")
+        grid.start_assign_single(Path("/samples/kick.wav"))
         await pilot.pause()
         await pilot.press("e")
         await pilot.pause()
@@ -528,40 +456,16 @@ async def test_a_then_bank_then_pad_assigns_the_highlighted_sample(samples_dir):
         await pilot.pause()
 
         assert _cell_name(grid, "E", "4") == "kick.wav"
-        assert grid.configuration.assignments[("E", "4")] == str(samples_dir / "kick.wav")
+        assert grid.configuration.assignments[("E", "4")] == "/samples/kick.wav"
 
 
-async def test_a_without_an_active_configuration_notifies_and_opens_no_picker(samples_dir):
-    app = ShmampleApp(samples_directories=[samples_dir])
-    notifications = []
-    app.notify = lambda message, **kwargs: notifications.append(message)
+async def test_start_assign_single_then_escape_at_bank_step_assigns_nothing(tmp_path):
+    app = AssignmentGridApp(tmp_path)
     async with app.run_test() as pilot:
-        browser = app.query_one("#files", FileBrowser)
-        kick_node = await _node(browser, pilot, "kick.wav")
-        browser.focus()
-        browser.move_cursor(kick_node)
-        await pilot.pause()
-
-        screens_before = len(app.screen_stack)
-        await pilot.press("a")
-        await pilot.pause()
-
-        assert len(app.screen_stack) == screens_before  # no bank picker appeared
-        assert len(notifications) == 1
-
-
-async def test_a_then_escape_at_bank_step_assigns_nothing(samples_dir):
-    app = ShmampleApp(samples_directories=[samples_dir])
-    async with app.run_test() as pilot:
-        browser = app.query_one("#files", FileBrowser)
-        grid = app.query_one("#assignments", AssignmentGrid)
+        grid = app.query_one(AssignmentGrid)
         _activate_configuration(grid)
-        kick_node = await _node(browser, pilot, "kick.wav")
-        browser.focus()
-        browser.move_cursor(kick_node)
-        await pilot.pause()
 
-        await pilot.press("a")
+        grid.start_assign_single(Path("/samples/kick.wav"))
         await pilot.pause()
         await pilot.press("escape")
         await pilot.pause()
@@ -569,18 +473,13 @@ async def test_a_then_escape_at_bank_step_assigns_nothing(samples_dir):
         assert grid.configuration.assignments == {}
 
 
-async def test_a_then_escape_at_pad_step_assigns_nothing(samples_dir):
-    app = ShmampleApp(samples_directories=[samples_dir])
+async def test_start_assign_single_then_escape_at_pad_step_assigns_nothing(tmp_path):
+    app = AssignmentGridApp(tmp_path)
     async with app.run_test() as pilot:
-        browser = app.query_one("#files", FileBrowser)
-        grid = app.query_one("#assignments", AssignmentGrid)
+        grid = app.query_one(AssignmentGrid)
         _activate_configuration(grid)
-        kick_node = await _node(browser, pilot, "kick.wav")
-        browser.focus()
-        browser.move_cursor(kick_node)
-        await pilot.pause()
 
-        await pilot.press("a")
+        grid.start_assign_single(Path("/samples/kick.wav"))
         await pilot.pause()
         await pilot.press("e")
         await pilot.pause()
@@ -655,134 +554,3 @@ async def test_autosaving_refreshes_the_configuration_list(tmp_path):
         await pilot.pause()
 
         assert [c.name for _, c in configs.entries] == ["New Kit"]
-
-
-async def test_a_with_a_multi_selection_assigns_to_pads_in_selection_order(multi_samples_dir):
-    app = ShmampleApp(samples_directories=[multi_samples_dir])
-    async with app.run_test() as pilot:
-        browser = app.query_one("#files", FileBrowser)
-        grid = app.query_one("#assignments", AssignmentGrid)
-        _activate_configuration(grid)
-        browser.focus()
-        await pilot.pause()
-
-        # Select sample1 then sample0 (reverse order) - assignment should
-        # follow that pick order, not tree/alphabetical order.
-        browser.move_cursor(await _node(browser, pilot, "sample1.wav"))
-        await pilot.pause()
-        await pilot.press("space")
-        browser.move_cursor(await _node(browser, pilot, "sample0.wav"))
-        await pilot.pause()
-        await pilot.press("space")
-        await pilot.pause()
-
-        await pilot.press("a")
-        await pilot.pause()
-        await pilot.press("b")
-        await pilot.pause()
-
-        assert _cell_name(grid, "B", "1") == "sample1.wav"
-        assert _cell_name(grid, "B", "2") == "sample0.wav"
-        assert grid.configuration.assignments == {
-            ("B", "1"): str(multi_samples_dir / "sample1.wav"),
-            ("B", "2"): str(multi_samples_dir / "sample0.wav"),
-        }
-
-
-async def test_a_with_a_multi_selection_clears_selection_markers_after_assigning(
-    multi_samples_dir,
-):
-    app = ShmampleApp(samples_directories=[multi_samples_dir])
-    async with app.run_test() as pilot:
-        browser = app.query_one("#files", FileBrowser)
-        grid = app.query_one("#assignments", AssignmentGrid)
-        _activate_configuration(grid)
-        node = await _node(browser, pilot, "sample0.wav")
-        browser.focus()
-        browser.move_cursor(node)
-        await pilot.pause()
-        await pilot.press("space")
-        await pilot.pause()
-        assert browser.selected == [node]
-
-        await pilot.press("a")
-        await pilot.pause()
-        await pilot.press("c")
-        await pilot.pause()
-
-        assert browser.selected == []
-
-
-async def test_a_with_a_multi_selection_replaces_the_whole_bank(multi_samples_dir):
-    app = ShmampleApp(samples_directories=[multi_samples_dir])
-    async with app.run_test() as pilot:
-        browser = app.query_one("#files", FileBrowser)
-        grid = app.query_one("#assignments", AssignmentGrid)
-        _activate_configuration(grid)
-        grid.assign("D", "1", Path("/samples/old.wav"))
-        browser.focus()
-        browser.move_cursor(await _node(browser, pilot, "sample0.wav"))
-        await pilot.pause()
-        await pilot.press("space")
-        await pilot.pause()
-
-        await pilot.press("a")
-        await pilot.pause()
-        await pilot.press("d")
-        await pilot.pause()
-
-        assert _cell_name(grid, "D", "1") == "sample0.wav"
-        assert ("D", "1") in grid.configuration.assignments
-        assert grid.configuration.assignments[("D", "1")] != "/samples/old.wav"
-
-
-async def test_a_with_exactly_six_selected_fills_every_pad(multi_samples_dir):
-    app = ShmampleApp(samples_directories=[multi_samples_dir])
-    async with app.run_test() as pilot:
-        browser = app.query_one("#files", FileBrowser)
-        grid = app.query_one("#assignments", AssignmentGrid)
-        _activate_configuration(grid)
-        browser.focus()
-        await pilot.pause()
-
-        for number in range(6):
-            browser.move_cursor(await _node(browser, pilot, f"sample{number}.wav"))
-            await pilot.pause()
-            await pilot.press("space")
-            await pilot.pause()
-
-        await pilot.press("a")
-        await pilot.pause()
-        await pilot.press("f")
-        await pilot.pause()
-
-        for number in range(6):
-            assert _cell_name(grid, "F", str(number + 1)) == f"sample{number}.wav"
-        assert len(grid.configuration.assignments) == 6
-
-
-async def test_a_with_an_active_selection_ignores_the_cursor_file(multi_samples_dir):
-    # Regression check for the branch in action_start_assign: with a
-    # selection active, "a" must go through the multi-assign path even
-    # though the cursor is sitting on a *different*, unselected file.
-    app = ShmampleApp(samples_directories=[multi_samples_dir])
-    async with app.run_test() as pilot:
-        browser = app.query_one("#files", FileBrowser)
-        grid = app.query_one("#assignments", AssignmentGrid)
-        _activate_configuration(grid)
-        browser.focus()
-        browser.move_cursor(await _node(browser, pilot, "sample0.wav"))
-        await pilot.pause()
-        await pilot.press("space")
-        await pilot.pause()
-
-        browser.move_cursor(await _node(browser, pilot, "sample1.wav"))  # cursor moves, selection doesn't
-        await pilot.pause()
-
-        await pilot.press("a")
-        await pilot.pause()
-        await pilot.press("g")
-        await pilot.pause()
-
-        assert _cell_name(grid, "G", "1") == "sample0.wav"
-        assert grid.configuration.assignments == {("G", "1"): str(multi_samples_dir / "sample0.wav")}

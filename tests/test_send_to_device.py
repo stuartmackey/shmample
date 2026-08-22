@@ -7,6 +7,7 @@ from shmample.config_store import list_configurations
 from shmample.device import DeviceState
 from shmample.widgets.config_list import ConfigList
 from shmample.widgets.file_browser import FileBrowser
+from shmample.widgets.holding_area import HoldingArea
 
 
 @pytest.fixture
@@ -27,14 +28,29 @@ async def _wait_for_send(app):
         await app.workers.wait_for_complete(send_workers)
 
 
-async def test_end_to_end_create_assign_and_send(samples_dir, tmp_path):
-    # Full path: "n" creates a configuration, "a" assigns a sample to it
-    # from the file browser, then "s" (highlighted in ConfigList) sends
-    # that assignment onto a mounted-in-IMPORT-mode device - exercising
+async def test_end_to_end_create_assign_and_send(samples_dir, tmp_path, monkeypatch):
+    # Full path: "n" creates a configuration, "a" from the file browser
+    # holds a sample against it, "a" from the holding area then assigns
+    # that held sample to a pad, and "s" (highlighted in ConfigList)
+    # sends the result onto a mounted-in-IMPORT-mode device - exercising
     # every pane this feature touches, not just ConfigList in isolation.
-    app = ShmampleApp(samples_directories=[samples_dir], configurations_dir=tmp_path / "configs")
+    #
+    # ShmampleApp's own DEVICE_POLL_INTERVAL keeps re-detecting the real
+    # (disconnected) hardware state every 2s in the background - with
+    # this many real steps now in the middle (holding area round-trip
+    # included), the test can run long enough for a poll tick to land
+    # between the manual `app.device_state = ...` below and "s", clobbering
+    # it back to disconnected. Pin detection to the fake connected state
+    # so the assertions below don't depend on beating that clock.
     mount = tmp_path / "mount"
     mount.mkdir()  # check_available_space needs a real mount to statfs
+
+    async def _fake_detect_connected():
+        return DeviceState(True, mount, device.MODE_IMPORT)
+
+    monkeypatch.setattr(device, "detect_device_state_async", _fake_detect_connected)
+
+    app = ShmampleApp(samples_directories=[samples_dir], configurations_dir=tmp_path / "configs")
     async with app.run_test() as pilot:
         configs = app.query_one("#configurations", ConfigList)
         configs.focus()
@@ -52,6 +68,12 @@ async def test_end_to_end_create_assign_and_send(samples_dir, tmp_path):
         kick_node = next(n for n in root_node.children if "kick.wav" in str(n.label))
         browser.focus()
         browser.move_cursor(kick_node)
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+
+        holding = app.query_one("#holding", HoldingArea)
+        holding.focus()
         await pilot.pause()
         await pilot.press("a")
         await pilot.pause()

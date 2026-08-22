@@ -14,9 +14,8 @@ from textual.widgets.tree import TreeNode
 from shmample import auto_tag, sample_store, tag_store
 from shmample import settings as settings_module
 from shmample.audio import NoPlayerFoundError, Previewer
-from shmample.device import PAD_NUMBERS
-from shmample.widgets.assignment_grid import AssignmentGrid, BankPickerModal, PadPickerModal
 from shmample.widgets.directory_picker import DirectoryPickerModal
+from shmample.widgets.holding_area import HoldingArea
 from shmample.widgets.vim_navigation import VimGoToTopAndBottom
 
 
@@ -159,7 +158,7 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
         # otherwise there's no hint at all that return plays the
         # highlighted sample (it still just expands/collapses a folder).
         Binding("enter", "select_cursor", "Preview"),
-        Binding("a", "start_assign", "Assign"),
+        Binding("a", "start_assign", "Hold"),
         Binding("A", "add_samples_directory", "Add path"),
         Binding("D", "remove_samples_directory", "Remove path"),
         Binding("t", "auto_tag_cursor_node", "Auto-tag"),
@@ -192,8 +191,8 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
         # the root node's initial label width, which calls render_label
         # (below) synchronously before this method gets to set anything
         # else, and render_label reads self.selected. Ordered (not a set)
-        # so multi-assign fills pads in the order samples were picked,
-        # not alphabetically/by tree position.
+        # so a multi-add lands in the holding area in the order samples
+        # were picked, not alphabetically/by tree position.
         self.selected: list[TreeNode] = []
         super().__init__("Samples", *args, **kwargs)
         self.show_root = False
@@ -453,19 +452,9 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
         if node.data is not None and not node.allow_expand:
             if node in self.selected:
                 self.selected.remove(node)
-                node.refresh()
-            elif len(self.selected) >= len(PAD_NUMBERS):
-                # A bank only has this many pads - capped at selection
-                # time rather than letting the pick grow unbounded and
-                # only complaining once "a" is pressed.
-                self.app.notify(
-                    f"Can't select more than {len(PAD_NUMBERS)} samples - "
-                    f"a bank only has {len(PAD_NUMBERS)} pads.",
-                    severity="warning",
-                )
             else:
                 self.selected.append(node)
-                node.refresh()
+            node.refresh()
         else:
             self.action_toggle_node()
 
@@ -495,57 +484,48 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
             self._start_preview(node.data.path)
 
     def action_start_assign(self) -> None:
-        grid = self.app.query_one("#assignments", AssignmentGrid)
-        if grid.configuration is None:
+        """"a" no longer picks a bank/pad directly - it just adds the
+        sample(s) to the configuration's device-agnostic holding area
+        (see HoldingArea). Placing a held sample onto an actual pad is a
+        separate step, done from the holding area pane itself."""
+        holding = self.app.query_one("#holding", HoldingArea)
+        if holding.configuration is None:
             self.app.notify(
-                "Pick or create a configuration before assigning samples.",
+                "Pick or create a configuration before adding samples.",
                 severity="warning",
             )
             return
 
         if self.selected:
-            self._start_assign_selection()
+            nodes = list(self.selected)
+            added, already_held = holding.add_samples([node.data.path for node in nodes])
+            self.selected.clear()
+            for node in nodes:
+                node.refresh()
+            self._notify_added_to_holding(added, already_held)
             return
 
         node = self.cursor_node
         if node is None or node.data is None or node.allow_expand:
             return
-        self._start_assign_single(node.data.path)
+        added, already_held = holding.add_samples([node.data.path])
+        self._notify_added_to_holding(added, already_held)
 
-    def _start_assign_single(self, path: Path) -> None:
-        def handle_bank(bank: str | None) -> None:
-            if bank is None:
-                return
-
-            def handle_pad(pad: str | None) -> None:
-                if pad is None:
-                    return
-                self.app.query_one("#assignments", AssignmentGrid).assign(bank, pad, path)
-
-            self.app.push_screen(PadPickerModal(path.name, bank), handle_pad)
-
-        self.app.push_screen(BankPickerModal(f"'{path.name}'"), handle_bank)
-
-    def _start_assign_selection(self) -> None:
-        # Snapshotted up front: handle_bank below clears self.selected
-        # once the assignment's done, but still needs the original nodes
-        # afterwards to refresh each one's now-stale checkmark.
-        nodes = list(self.selected)
-        paths = [node.data.path for node in nodes]
-
-        def handle_bank(bank: str | None) -> None:
-            if bank is None:
-                return
-            grid = self.app.query_one("#assignments", AssignmentGrid)
-            # No "too many selected" handling needed here - capped at
-            # selection time in action_toggle_select_or_node, so paths
-            # can never exceed len(PAD_NUMBERS) by the time we get here.
-            grid.assign_many(bank, paths)
-            self.selected.clear()
-            for node in nodes:
-                node.refresh()
-
-        self.app.push_screen(BankPickerModal(f"{len(paths)} selected samples"), handle_bank)
+    def _notify_added_to_holding(self, added: list[Path], already_held: list[Path]) -> None:
+        if not added:
+            if already_held:
+                subject = (
+                    f"'{already_held[0].name}'"
+                    if len(already_held) == 1
+                    else f"{len(already_held)} samples"
+                )
+                self.app.notify(f"{subject} already in the holding area.")
+            return
+        subject = f"'{added[0].name}'" if len(added) == 1 else f"{len(added)} samples"
+        message = f"Added {subject} to the holding area."
+        if already_held:
+            message += f" ({len(already_held)} already there)"
+        self.app.notify(message)
 
     def action_auto_tag_cursor_node(self) -> None:
         node = self.cursor_node

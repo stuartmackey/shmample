@@ -15,6 +15,13 @@ class Configuration:
     modified_at: datetime
     # (bank, pad) -> original sample filepath, per 02-implementation-plan.md
     assignments: dict[tuple[str, str], str] = field(default_factory=dict)
+    # Ordered, device-agnostic staging list of sample filepaths "in" this
+    # configuration but not yet (or not ever) tied to a specific device's
+    # bank/pad layout - the first step towards decoupling a configuration
+    # from any one device's shape. Unique by path - re-adding an already-
+    # held sample is a no-op (see HoldingArea.add_samples), not a second
+    # entry.
+    holding: list[str] = field(default_factory=list)
 
 
 def _slugify(name: str) -> str:
@@ -32,6 +39,7 @@ def _to_json(config: Configuration) -> dict:
             {"bank": bank, "pad": pad, "sample_path": sample_path}
             for (bank, pad), sample_path in config.assignments.items()
         ],
+        "holding": list(config.holding),
     }
 
 
@@ -45,6 +53,9 @@ def _from_json(data: dict) -> Configuration:
             (entry["bank"], entry["pad"]): entry["sample_path"]
             for entry in data.get("assignments", [])
         },
+        # .get(..., []) - configurations saved before "holding" existed
+        # have no such key at all, not an empty one.
+        holding=list(data.get("holding", [])),
     )
 
 

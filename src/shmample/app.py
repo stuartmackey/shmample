@@ -9,6 +9,7 @@ from shmample import device
 from shmample.widgets.assignment_grid import AssignmentGrid
 from shmample.widgets.config_list import ConfigList
 from shmample.widgets.device_panel import DevicePanel
+from shmample.widgets.holding_area import HoldingArea
 from shmample.widgets.main_column import MainColumn
 
 # ansi-dark is one of Textual's built-in themes that render using the
@@ -40,7 +41,8 @@ class ShmampleApp(App):
         Binding("3", "focus_pane('#files')", "Samples", show=False),
         Binding("4", "focus_pane('#tags')", "Tags", show=False),
         Binding("5", "focus_pane('#preview')", "Preview", show=False),
-        Binding("6", "focus_pane('#assignments')", "Assignments", show=False),
+        Binding("6", "focus_pane('#holding')", "Holding", show=False),
+        Binding("7", "focus_pane('#assignments')", "Assignments", show=False),
         # ctrl+h is also bound as plain "backspace": most terminals send
         # the same byte (0x08, or DEL 0x7f) for both, and Textual's
         # legacy ANSI decoding collapses that byte to the "backspace" key
@@ -63,17 +65,18 @@ class ShmampleApp(App):
     # adjacency once here is simpler than teaching a general spatial
     # search about this particular shape.
     PANE_ADJACENCY = {
-        "device": {"down": "configurations", "right": "assignments"},
-        "configurations": {"up": "device", "down": "files", "right": "assignments"},
+        "device": {"down": "configurations", "right": "holding"},
+        "configurations": {"up": "device", "down": "files", "right": "holding"},
         "files": {"up": "configurations", "down": "preview", "right": "tags"},
         "tags": {
             "up": "configurations",
             "down": "preview",
             "left": "files",
-            "right": "assignments",
+            "right": "holding",
         },
-        "preview": {"up": "files", "right": "assignments"},
-        "assignments": {"left": "configurations"},
+        "preview": {"up": "files", "right": "holding"},
+        "holding": {"left": "configurations", "right": "assignments"},
+        "assignments": {"left": "holding"},
     }
 
     def action_focus_pane(self, selector: str) -> None:
@@ -113,8 +116,11 @@ class ShmampleApp(App):
                 self.db_path,
                 id="main-column",
             )
+            holding = HoldingArea(self.configurations_dir, id="holding")
+            holding.border_title = "[6] Holding"
+            yield holding
             assignments = AssignmentGrid(self.configurations_dir, id="assignments")
-            assignments.border_title = "[6] Assignments"
+            assignments.border_title = "[7] Assignments"
             yield assignments
         yield Footer()
 
@@ -139,7 +145,12 @@ class ShmampleApp(App):
             self.query_one("#configurations", ConfigList).refresh_list()
 
     def on_config_list_opened(self, message: ConfigList.Opened) -> None:
-        self.query_one("#assignments", AssignmentGrid).load((message.path, message.configuration))
+        entry = (message.path, message.configuration)
+        self.query_one("#assignments", AssignmentGrid).load(entry)
+        self.query_one("#holding", HoldingArea).load(entry)
 
     def on_assignment_grid_saved(self, message: AssignmentGrid.Saved) -> None:
+        self.query_one("#configurations", ConfigList).refresh_list()
+
+    def on_holding_area_saved(self, message: HoldingArea.Saved) -> None:
         self.query_one("#configurations", ConfigList).refresh_list()
