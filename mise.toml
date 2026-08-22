@@ -1,5 +1,6 @@
 [tools]
 python = "3.11"
+uv = "latest"
 
 [tasks.setup]
 description = "Install dependencies for local development"
