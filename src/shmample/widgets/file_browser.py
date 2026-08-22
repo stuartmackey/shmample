@@ -9,7 +9,6 @@ from textual import events
 from textual.binding import Binding
 from textual.message import Message
 from textual.widgets import Tree
-from textual.widgets._tree import TOGGLE_STYLE  # no public re-export of this small style constant
 from textual.widgets.tree import TreeNode
 
 from shmample import auto_tag, sample_store, tag_store
@@ -101,19 +100,27 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
     the nearest vim-flavoured equivalents - jump to parent, toggle node -
     rather than a direct equivalent of DataTable's cursor_left/cursor_right.
 
-    ICON_NODE/ICON_NODE_EXPANDED/ICON_FILE default to colour emoji
-    (folder/file glyphs whose colour is baked into the terminal's emoji
-    font and can't be restyled via CSS/theme). Nerd Font glyphs are plain
-    text characters instead, so they inherit whatever colour the
-    directory-tree--folder/--file component styles give them - here,
-    that's just the theme's normal foreground, same as everything else.
+    ICON_NODE/ICON_NODE_EXPANDED/ICON_FILE are Nerd Font glyphs (colour
+    emoji folder/file icons bake their colour into the terminal's emoji
+    font and can't be restyled via CSS/theme; Nerd Font glyphs are plain
+    text characters, so they take whatever colour the
+    directory-tree--folder/--file component styles give them). Written
+    as \\uXXXX escapes rather than the literal character - a bare PUA
+    codepoint pasted straight into source is invisible in most editors
+    and easy to silently mangle into something else (the exact glyphs
+    named in these comments used to be plain spaces here). A folder also
+    gets its own disclosure chevron ahead of the folder icon, separate
+    from the open/closed icon swap - two independent signals for the
+    same state reads clearer than relying on the one icon change alone.
     Every visible file is a .wav under filter_paths below, so one file
     icon (rather than per-extension icons) is enough.
     """
 
-    ICON_NODE = " "  #  nf-fa-folder
-    ICON_NODE_EXPANDED = " "  #  nf-fa-folder_open
-    ICON_FILE = " "  #  nf-fa-file_audio_o
+    ICON_CHEVRON_COLLAPSED = "\uf0da"  # nf-fa-caret_right
+    ICON_CHEVRON_EXPANDED = "\uf0d7"  # nf-fa-caret_down
+    ICON_NODE = "\uf07b"  # nf-fa-folder
+    ICON_NODE_EXPANDED = "\uf07c"  # nf-fa-folder_open
+    ICON_FILE = "\uf1c7"  # nf-fa-file_audio_o
 
     COMPONENT_CLASSES = {
         "directory-tree--extension",
@@ -127,6 +134,7 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
         scrollbar-size-vertical: 1;
 
         & > .directory-tree--folder {
+            color: ansi_cyan;
             text-style: bold;
         }
 
@@ -409,18 +417,21 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
 
         if self.is_mounted:
             if node.allow_expand:
-                prefix = (
-                    self.ICON_NODE_EXPANDED if node.is_expanded else self.ICON_NODE,
-                    base_style + TOGGLE_STYLE,
+                folder_style = base_style + self.get_component_rich_style(
+                    "directory-tree--folder", partial=True
                 )
-                node_label.stylize_before(
-                    self.get_component_rich_style("directory-tree--folder", partial=True)
+                chevron = (
+                    self.ICON_CHEVRON_EXPANDED if node.is_expanded else self.ICON_CHEVRON_COLLAPSED
                 )
+                icon = self.ICON_NODE_EXPANDED if node.is_expanded else self.ICON_NODE
+                prefix = (f"{chevron} {icon} ", folder_style)
+                node_label.stylize_before(folder_style)
             else:
-                prefix = (self.ICON_FILE, base_style)
-                node_label.stylize_before(
-                    self.get_component_rich_style("directory-tree--file", partial=True)
+                file_style = base_style + self.get_component_rich_style(
+                    "directory-tree--file", partial=True
                 )
+                prefix = (f"{self.ICON_FILE} ", file_style)
+                node_label.stylize_before(file_style)
                 node_label.highlight_regex(
                     r"\..+$",
                     self.get_component_rich_style("directory-tree--extension", partial=True),
