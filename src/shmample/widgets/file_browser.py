@@ -527,11 +527,24 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
             message += f" ({len(already_held)} already there)"
         self.app.notify(message)
 
+    def _root_for(self, node: TreeNode[Entry]) -> Path:
+        """The top-level root path `node` descends from - whichever of the
+        currently displayed root node(s) is its ancestor. Anchors "how deep
+        below the root is this folder" for auto_tag's pack/vendor folder
+        tagging (tags_for_path's `root`), so depth is judged against a
+        boundary the user actually recognises (a configured samples
+        directory, or a "."-focused subfolder), not an arbitrary ancestor.
+        """
+        while node.parent is not self.root:
+            node = node.parent
+        return node.data.path
+
     def action_auto_tag_cursor_node(self) -> None:
         node = self.cursor_node
         if node is None or node.data is None:
             return
         path = node.data.path
+        root = self._root_for(node)
 
         if node.allow_expand:
             # A folder's worth of samples can genuinely take a while (see
@@ -542,10 +555,10 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
             self.loading = True
             self.border_subtitle = "Auto-tagging..."
             self.run_worker(
-                self._auto_tag_folder(path), exclusive=True, group="auto-tag", name="auto-tag"
+                self._auto_tag_folder(path, root), exclusive=True, group="auto-tag", name="auto-tag"
             )
         else:
-            tags = auto_tag.tag_file(path, self.db_path)
+            tags = auto_tag.tag_file(path, self.db_path, root)
             if tags:
                 self.app.notify(f"Tagged '{path.name}': {', '.join(sorted(tags))}")
             else:
@@ -561,7 +574,7 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
     # calls for no visible benefit.
     TAGGING_PROGRESS_INTERVAL = 50
 
-    async def _auto_tag_folder(self, path: Path) -> None:
+    async def _auto_tag_folder(self, path: Path, root: Path) -> None:
         def on_file_tagged(file_path: Path, tags: set[str], index: int, total: int) -> None:
             if index == total or index % self.TAGGING_PROGRESS_INTERVAL == 0:
                 # Called from tag_folder's worker thread (asyncio.to_thread
@@ -571,7 +584,7 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
 
         try:
             count = await asyncio.to_thread(
-                auto_tag.tag_folder, path, self.db_path, on_file_tagged
+                auto_tag.tag_folder, path, self.db_path, on_file_tagged, root
             )
         finally:
             self.loading = False

@@ -109,9 +109,9 @@ async def test_t_shows_a_persistent_loading_indicator_while_a_folder_is_processi
     release = threading.Event()
     real_tag_folder = auto_tag.tag_folder
 
-    def _blocking_tag_folder(path, db_path=None, on_file_tagged=None):
+    def _blocking_tag_folder(path, db_path=None, on_file_tagged=None, root=None):
         release.wait(timeout=5)
-        return real_tag_folder(path, db_path, on_file_tagged)
+        return real_tag_folder(path, db_path, on_file_tagged, root)
 
     monkeypatch.setattr(auto_tag, "tag_folder", _blocking_tag_folder)
 
@@ -143,7 +143,7 @@ async def test_t_on_a_folder_shows_progress_partway_through(samples_dir, monkeyp
     reached_first_file = threading.Event()
     real_tag_folder = auto_tag.tag_folder
 
-    def _tag_folder_pausing_after_first_file(path, db_path=None, on_file_tagged=None):
+    def _tag_folder_pausing_after_first_file(path, db_path=None, on_file_tagged=None, root=None):
         def wrapped(file_path, tags, index, total):
             if on_file_tagged is not None:
                 on_file_tagged(file_path, tags, index, total)
@@ -151,7 +151,7 @@ async def test_t_on_a_folder_shows_progress_partway_through(samples_dir, monkeyp
                 reached_first_file.set()
                 release.wait(timeout=5)
 
-        return real_tag_folder(path, db_path, wrapped)
+        return real_tag_folder(path, db_path, wrapped, root)
 
     monkeypatch.setattr(auto_tag, "tag_folder", _tag_folder_pausing_after_first_file)
     monkeypatch.setattr(FileBrowser, "TAGGING_PROGRESS_INTERVAL", 1)
@@ -211,3 +211,72 @@ async def test_tagging_the_currently_previewed_file_updates_the_preview_pane(sam
 
         date_text = str(preview.query_one("#preview-date").render())
         assert "kick" in date_text
+
+
+async def test_t_on_a_nested_file_adds_a_pack_folder_tag(tmp_path):
+    # The configured samples directory is the boundary "root" for folder
+    # tagging - the pack folder directly beneath it should become a tag
+    # alongside the usual instrument-convention one.
+    pack = tmp_path / "Loopmasters Deep House"
+    pack.mkdir()
+    (pack / "BD 808.wav").write_bytes(b"")
+    db_path = tmp_path / "shmample.db"
+    app = ShmampleApp(samples_directories=[tmp_path], db_path=db_path)
+    async with app.run_test() as pilot:
+        browser = app.query_one("#files", FileBrowser)
+        root_node = await _expanded_root(browser, pilot)
+        pack_node = _node(root_node, "Loopmasters Deep House")
+        pack_node.expand()
+        await pilot.pause()
+        browser.focus()
+        browser.move_cursor(_node(pack_node, "BD 808.wav"))
+        await pilot.pause()
+
+        await pilot.press("t")
+        await pilot.pause()
+
+        assert tags_for_sample(pack / "BD 808.wav", db_path) == {
+            "kick",
+            "loopmasters-deep-house",
+        }
+
+
+async def test_t_anchors_folder_tags_to_a_focus_narrowed_root(tmp_path):
+    # "." narrows the displayed root to whatever folder's under the
+    # cursor (see FileBrowser.action_focus_cursor_folder) - folder tagging
+    # should anchor to that narrowed root, not the original configured
+    # samples directory, since that's the boundary the user's actually
+    # looking at once narrowed.
+    vendor = tmp_path / "SomeVendor"
+    pack = vendor / "Some Pack"
+    pack.mkdir(parents=True)
+    (pack / "BD 808.wav").write_bytes(b"")
+    db_path = tmp_path / "shmample.db"
+    app = ShmampleApp(samples_directories=[tmp_path], db_path=db_path)
+    async with app.run_test() as pilot:
+        browser = app.query_one("#files", FileBrowser)
+        root_node = await _expanded_root(browser, pilot)
+        vendor_node = _node(root_node, "SomeVendor")
+        browser.focus()
+        browser.move_cursor(vendor_node)
+        await pilot.pause()
+
+        await pilot.press(".")  # narrow the displayed root to SomeVendor
+        await pilot.pause()
+
+        narrowed_root = browser.root.children[0]
+        assert "SomeVendor" in str(narrowed_root.label)
+        narrowed_root.expand()
+        await pilot.pause()
+        pack_node = _node(narrowed_root, "Some Pack")
+        pack_node.expand()
+        await pilot.pause()
+        browser.move_cursor(_node(pack_node, "BD 808.wav"))
+        await pilot.pause()
+
+        await pilot.press("t")
+        await pilot.pause()
+
+        # "SomeVendor" itself isn't a folder between the file and the
+        # narrowed root any more, so only "Some Pack" shows up.
+        assert tags_for_sample(pack / "BD 808.wav", db_path) == {"kick", "some-pack"}
