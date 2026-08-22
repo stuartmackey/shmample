@@ -31,7 +31,9 @@ class ShmampleApp(App):
     # Global fallback bindings: Textual checks the focused widget's own
     # BINDINGS first, walking up to the App only if nothing closer claims
     # the key - so these don't clash with ConfigList/FileBrowser's own
-    # bindings (neither uses digits). Numbered pane jump, lazygit-style.
+    # bindings (neither uses digits, and none of the panes bind ctrl+hjkl).
+    # Numbered pane jump, lazygit-style, plus vim/tmux-style directional
+    # pane movement.
     BINDINGS = [
         Binding("1", "focus_pane('#device')", "Device", show=False),
         Binding("2", "focus_pane('#configurations')", "Configurations", show=False),
@@ -39,10 +41,51 @@ class ShmampleApp(App):
         Binding("4", "focus_pane('#tags')", "Tags", show=False),
         Binding("5", "focus_pane('#preview')", "Preview", show=False),
         Binding("6", "focus_pane('#assignments')", "Assignments", show=False),
+        # ctrl+h is also bound as plain "backspace": most terminals send
+        # the same byte (0x08, or DEL 0x7f) for both, and Textual's
+        # legacy ANSI decoding collapses that byte to the "backspace" key
+        # rather than "ctrl+h" - only terminals that opt into the Kitty
+        # keyboard protocol can tell the two apart. Binding both keeps
+        # left-movement working everywhere; harmless elsewhere, since any
+        # widget that actually wants backspace for text editing (e.g.
+        # Input) claims it before this App-level fallback is ever reached.
+        Binding("ctrl+h", "focus_direction('left')", "Pane left", show=False),
+        Binding("backspace", "focus_direction('left')", "Pane left", show=False),
+        Binding("ctrl+j", "focus_direction('down')", "Pane down", show=False),
+        Binding("ctrl+k", "focus_direction('up')", "Pane up", show=False),
+        Binding("ctrl+l", "focus_direction('right')", "Pane right", show=False),
     ]
+
+    # The layout (see MainColumn.compose and ShmampleApp.compose) isn't a
+    # regular grid - device/configurations/preview each span the full
+    # column width while files/tags split a row - so there's no honest
+    # geometric "widget in that direction" to compute. Hand-coding the
+    # adjacency once here is simpler than teaching a general spatial
+    # search about this particular shape.
+    PANE_ADJACENCY = {
+        "device": {"down": "configurations", "right": "assignments"},
+        "configurations": {"up": "device", "down": "files", "right": "assignments"},
+        "files": {"up": "configurations", "down": "preview", "right": "tags"},
+        "tags": {
+            "up": "configurations",
+            "down": "preview",
+            "left": "files",
+            "right": "assignments",
+        },
+        "preview": {"up": "files", "right": "assignments"},
+        "assignments": {"left": "configurations"},
+    }
 
     def action_focus_pane(self, selector: str) -> None:
         self.query_one(selector).focus()
+
+    def action_focus_direction(self, direction: str) -> None:
+        focused = self.focused
+        if focused is None or focused.id is None:
+            return
+        target = self.PANE_ADJACENCY.get(focused.id, {}).get(direction)
+        if target is not None:
+            self.query_one(f"#{target}").focus()
 
     def __init__(
         self,
