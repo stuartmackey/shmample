@@ -37,7 +37,7 @@ class HoldingArea(ListView, VimGoToTopAndBottom):
     DEFAULT_CSS = """
     HoldingArea {
         width: 1fr;
-        max-width: 25%;
+        max-width: 33%;
         height: 1fr;
         border: round $foreground;
     }

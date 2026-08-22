@@ -9,8 +9,10 @@ from shmample import device
 from shmample.widgets.assignment_grid import AssignmentGrid
 from shmample.widgets.config_list import ConfigList
 from shmample.widgets.device_panel import DevicePanel
+from shmample.widgets.file_browser import FileBrowser
 from shmample.widgets.holding_area import HoldingArea
 from shmample.widgets.main_column import MainColumn
+from shmample.widgets.tag_browser import TagBrowser
 
 # ansi-dark is one of Textual's built-in themes that render using the
 # terminal's own configured palette (ansi_default, ansi_blue, ...) instead
@@ -39,8 +41,8 @@ class ShmampleApp(App):
         Binding("1", "focus_pane('#device')", "Device", show=False),
         Binding("2", "focus_pane('#configurations')", "Configurations", show=False),
         Binding("3", "focus_pane('#files')", "Samples", show=False),
-        Binding("4", "focus_pane('#tags')", "Tags", show=False),
-        Binding("5", "focus_pane('#preview')", "Preview", show=False),
+        Binding("4", "focus_pane('#preview')", "Preview", show=False),
+        Binding("5", "focus_pane('#tags')", "Tags", show=False),
         Binding("6", "focus_pane('#holding')", "Holding", show=False),
         Binding("7", "focus_pane('#assignments')", "Assignments", show=False),
         # ctrl+h is also bound as plain "backspace": most terminals send
@@ -59,23 +61,19 @@ class ShmampleApp(App):
     ]
 
     # The layout (see MainColumn.compose and ShmampleApp.compose) isn't a
-    # regular grid - device/configurations/preview each span the full
-    # column width while files/tags split a row - so there's no honest
-    # geometric "widget in that direction" to compute. Hand-coding the
-    # adjacency once here is simpler than teaching a general spatial
-    # search about this particular shape.
+    # regular grid - device/configurations/files/preview stack in one
+    # column while tags/holding/assignments are each their own full-height
+    # column beside it - so there's no honest geometric "widget in that
+    # direction" to compute. Hand-coding the adjacency once here is
+    # simpler than teaching a general spatial search about this
+    # particular shape.
     PANE_ADJACENCY = {
-        "device": {"down": "configurations", "right": "holding"},
-        "configurations": {"up": "device", "down": "files", "right": "holding"},
+        "device": {"down": "configurations", "right": "tags"},
+        "configurations": {"up": "device", "down": "files", "right": "tags"},
         "files": {"up": "configurations", "down": "preview", "right": "tags"},
-        "tags": {
-            "up": "configurations",
-            "down": "preview",
-            "left": "files",
-            "right": "holding",
-        },
-        "preview": {"up": "files", "right": "holding"},
-        "holding": {"left": "configurations", "right": "assignments"},
+        "preview": {"up": "files", "right": "tags"},
+        "tags": {"left": "files", "right": "holding"},
+        "holding": {"left": "tags", "right": "assignments"},
         "assignments": {"left": "holding"},
     }
 
@@ -116,11 +114,22 @@ class ShmampleApp(App):
                 self.db_path,
                 id="main-column",
             )
+            tags = TagBrowser(self.db_path, id="tags")
+            tags.border_title = "[5] Tags"
+            yield tags
             holding = HoldingArea(self.configurations_dir, id="holding")
             holding.border_title = "[6] Holding"
             yield holding
             assignments = AssignmentGrid(self.configurations_dir, id="assignments")
             assignments.border_title = "[7] Assignments"
+            # Parked, not deleted - we're trying a "Collect" layout
+            # (Samples/Tags/Preview/Holding) with the device-specific
+            # "Assign" step (this grid) out of the way for now, per the
+            # two-screen-mode direction being explored. Still mounted so
+            # ConfigList.Opened/AssignmentGrid.Saved and HoldingArea's own
+            # "a" chord (start_assign_single) keep working unchanged -
+            # display:none only affects layout/paint, not the DOM.
+            assignments.display = False
             yield assignments
         yield Footer()
 
@@ -154,3 +163,18 @@ class ShmampleApp(App):
 
     def on_holding_area_saved(self, message: HoldingArea.Saved) -> None:
         self.query_one("#configurations", ConfigList).refresh_list()
+
+    # TagBrowser/FileBrowser cross-talk - used to be handled inside
+    # MainColumn (see its docstring), back when TagBrowser was one of its
+    # descendants. Now that it's a sibling column instead, only the App
+    # sits above both, so this is where they have to meet.
+    def on_file_browser_tagged(self, message: FileBrowser.Tagged) -> None:
+        self.query_one("#tags", TagBrowser).refresh_list()
+
+    def on_file_browser_root_focus_changed(self, message: FileBrowser.RootFocusChanged) -> None:
+        browser = self.query_one("#files", FileBrowser)
+        self.query_one("#tags", TagBrowser).set_scope(browser.focused_root)
+
+    def on_tag_browser_selection_changed(self, message: TagBrowser.SelectionChanged) -> None:
+        tags = self.query_one("#tags", TagBrowser)
+        self.query_one("#files", FileBrowser).set_tag_filter(tags.selected_tags)

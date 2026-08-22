@@ -18,10 +18,10 @@ async def test_number_keys_jump_focus_to_named_panes():
         assert isinstance(app.focused, FileBrowser)
 
         await pilot.press("4")
-        assert isinstance(app.focused, TagBrowser)
+        assert isinstance(app.focused, PreviewInfo)
 
         await pilot.press("5")
-        assert isinstance(app.focused, PreviewInfo)
+        assert isinstance(app.focused, TagBrowser)
 
         await pilot.press("6")
         assert isinstance(app.focused, HoldingArea)

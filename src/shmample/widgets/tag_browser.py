@@ -32,6 +32,22 @@ class TagBrowser(ListView, VimGoToTopAndBottom):
     Vertical-only, like ConfigList, so it only needs vim's j/k/gg/G.
     """
 
+    # Its own top-level column now (app.py's compose), not nested inside
+    # MainColumn's "samples-row" any more - so, like AssignmentGrid/
+    # HoldingArea, it needs to size and border itself rather than relying
+    # on a parent's CSS.
+    DEFAULT_CSS = """
+    TagBrowser {
+        width: 1fr;
+        max-width: 33%;
+        height: 1fr;
+        border: round $foreground;
+    }
+    TagBrowser:focus {
+        border: round $primary;
+    }
+    """
+
     BINDINGS = [
         Binding("j", "cursor_down", "Down (vim)", show=False),
         Binding("k", "cursor_up", "Up (vim)", show=False),
