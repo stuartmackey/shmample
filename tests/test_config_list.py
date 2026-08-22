@@ -1,6 +1,7 @@
 import threading
 import wave
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 from textual.app import App, ComposeResult
@@ -48,7 +49,7 @@ class ConfigListApp(App):
         yield ConfigList(self.configurations_dir, id="configs")
 
 
-def _save(directory, name, description="", assignments=None):
+def _save(directory, name, description="", assignments=None, holding=None):
     now = datetime(2026, 1, 1)
     save_configuration(
         Configuration(
@@ -57,6 +58,7 @@ def _save(directory, name, description="", assignments=None):
             created_at=now,
             modified_at=now,
             assignments=assignments or {},
+            holding=holding or [],
         ),
         directory,
     )
@@ -697,6 +699,99 @@ async def test_s_confirm_modal_warns_about_a_likely_truncated_sample(tmp_path):
         detail = str(app.screen.query_one("#detail", Static).render())
         assert "truncated" in detail
         assert "long.wav" in detail
+
+
+async def _wait_for_export(app):
+    # Same reasoning as _wait_for_send above - scope to just the
+    # "export" group rather than every worker in the app.
+    export_workers = [w for w in app.workers if w.group == "export"]
+    if export_workers:
+        await app.workers.wait_for_complete(export_workers)
+
+
+async def test_e_exports_the_highlighted_configurations_held_samples(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    destination = home / "Export"
+    destination.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: home)
+
+    kick = tmp_path / "kick.wav"
+    kick.write_bytes(b"kick-data")
+    _save(tmp_path, "My Kit", holding=[str(kick)])
+
+    app = ConfigListApp(tmp_path)
+    async with app.run_test() as pilot:
+        configs = app.query_one(ConfigList)
+        configs.focus()
+        await pilot.pause()
+
+        await pilot.press("e")
+        await pilot.pause()
+
+        tree = app.screen.query_one("_DirsOnlyDirectoryTree")
+        export_node = next(n for n in tree.root.children if "Export" in str(n.label))
+        tree.move_cursor(export_node)
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        await _wait_for_export(app)
+
+        assert (destination / "my-kit" / "kick.wav").read_bytes() == b"kick-data"
+
+
+async def test_e_then_escape_exports_nothing(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: home)
+
+    kick = tmp_path / "kick.wav"
+    kick.write_bytes(b"kick-data")
+    _save(tmp_path, "My Kit", holding=[str(kick)])
+
+    app = ConfigListApp(tmp_path)
+    async with app.run_test() as pilot:
+        configs = app.query_one(ConfigList)
+        configs.focus()
+        await pilot.pause()
+
+        await pilot.press("e")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert list(home.iterdir()) == []
+
+
+async def test_e_with_nothing_held_notifies_and_opens_no_picker(tmp_path):
+    _save(tmp_path, "My Kit")
+    app = ConfigListApp(tmp_path)
+    notifications = []
+    app.notify = lambda message, **kwargs: notifications.append(message)
+    async with app.run_test() as pilot:
+        configs = app.query_one(ConfigList)
+        configs.focus()
+        await pilot.pause()
+
+        screens_before = len(app.screen_stack)
+        await pilot.press("e")
+        await pilot.pause()
+
+        assert len(app.screen_stack) == screens_before  # no folder picker appeared
+        assert len(notifications) == 1
+
+
+async def test_e_with_no_configurations_does_nothing(tmp_path):
+    app = ConfigListApp(tmp_path)
+    async with app.run_test() as pilot:
+        configs = app.query_one(ConfigList)
+        configs.focus()
+        await pilot.pause()
+
+        screens_before = len(app.screen_stack)
+        await pilot.press("e")  # should not raise
+        await pilot.pause()
+
+        assert len(app.screen_stack) == screens_before
 
 
 def _configuration(tmp_path, assignments=None):

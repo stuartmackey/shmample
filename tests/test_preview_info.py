@@ -4,12 +4,16 @@ import wave
 import pytest
 from textual_plotext import PlotextPlot
 
+from datetime import datetime
+
 from shmample import sample_store
 from shmample.app import ShmampleApp
+from shmample.config_store import Configuration, save_configuration
 from shmample.device import human_bytes
 from shmample.tag_store import auto_assign_tag
 from shmample.widgets import preview_info as preview_info_module
 from shmample.widgets.file_browser import FileBrowser
+from shmample.widgets.holding_area import HoldingArea
 from shmample.widgets.preview_info import PreviewInfo, _format_sample_rate
 
 
@@ -113,6 +117,35 @@ async def test_highlighting_a_folder_clears_the_pane(samples_dir):
         await pilot.pause()
         assert _status_text(preview) == ""
         assert _format_text(preview) == ""
+
+
+def _activate_configuration(app: ShmampleApp, holding_paths: list[str] = ()):
+    now = datetime(2026, 1, 1)
+    config = Configuration(
+        name="Kit", description="", created_at=now, modified_at=now, holding=list(holding_paths)
+    )
+    holding = app.query_one("#holding", HoldingArea)
+    path = save_configuration(config, holding.configurations_dir)
+    holding.load((path, config))
+    return path, config
+
+
+async def test_highlighting_a_held_file_shows_its_name_date_duration_and_size(samples_dir, tmp_path):
+    app = ShmampleApp(samples_directories=[samples_dir], configurations_dir=tmp_path)
+    async with app.run_test() as pilot:
+        preview = app.query_one(PreviewInfo)
+        holding = app.query_one("#holding", HoldingArea)
+        _activate_configuration(app, holding_paths=[str(samples_dir / "kick.wav")])
+        holding.focus()
+        # A generous margin past PREVIEW_DEBOUNCE_SECONDS (main_column.py) -
+        # this route goes through an extra config save/load first, so the
+        # tighter 0.2s used elsewhere in this file for a bare cursor move
+        # isn't always enough here.
+        await pilot.pause(0.4)
+
+        text = _status_text(preview)
+        assert "kick.wav" in text
+        assert "0.50s" in text  # fixture is 4000 frames @ 8000Hz = 0.5s exactly
 
 
 async def test_rapidly_scrolling_past_a_file_never_loads_its_preview(samples_dir):

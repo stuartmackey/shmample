@@ -3,7 +3,9 @@ from pathlib import Path
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
-from textual.widgets import Footer
+from textual.css.query import NoMatches
+from textual.timer import Timer
+from textual.widgets import Footer, ListView
 
 from shmample import device
 from shmample.widgets.assignment_grid import AssignmentGrid
@@ -11,7 +13,8 @@ from shmample.widgets.config_list import ConfigList
 from shmample.widgets.device_panel import DevicePanel
 from shmample.widgets.file_browser import FileBrowser
 from shmample.widgets.holding_area import HoldingArea
-from shmample.widgets.main_column import MainColumn
+from shmample.widgets.main_column import PREVIEW_DEBOUNCE_SECONDS, MainColumn
+from shmample.widgets.preview_info import PreviewInfo
 from shmample.widgets.tag_browser import TagBrowser
 
 # ansi-dark is one of Textual's built-in themes that render using the
@@ -104,6 +107,7 @@ class ShmampleApp(App):
         self.db_path = db_path
         self.theme = THEME
         self.device_state: device.DeviceState | None = None
+        self._holding_preview_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         with Horizontal():
@@ -178,3 +182,37 @@ class ShmampleApp(App):
     def on_tag_browser_selection_changed(self, message: TagBrowser.SelectionChanged) -> None:
         tags = self.query_one("#tags", TagBrowser)
         self.query_one("#files", FileBrowser).set_tag_filter(tags.selected_tags)
+
+    # HoldingArea/PreviewInfo cross-talk - same reasoning as the
+    # TagBrowser/FileBrowser handlers above: PreviewInfo lives inside
+    # MainColumn, HoldingArea is a sibling column, so only the App sits
+    # above both. ListView.Highlighted also fires for ConfigList (the
+    # other ListView in the tree), hence the id check - it isn't wired to
+    # the preview pane.
+    def on_list_view_highlighted(self, message: ListView.Highlighted) -> None:
+        if message.list_view.id != "holding":
+            return
+        if self._holding_preview_timer is not None:
+            self._holding_preview_timer.stop()
+            self._holding_preview_timer = None
+
+        holding = self.query_one("#holding", HoldingArea)
+        preview = self.query_one("#preview", PreviewInfo)
+        path = holding.cursor_path
+
+        def show_debounced() -> None:
+            # The debounce delay is real wall-clock time, not paced by the
+            # message pump - a highlight right at app shutdown can still
+            # be pending once PreviewInfo's own children are already torn
+            # down (is_mounted alone doesn't catch this - it can still be
+            # True mid-teardown), so this has to tolerate that rather than
+            # assume the widget's still fully there.
+            try:
+                preview.show(path)
+            except NoMatches:
+                pass
+
+        if path is not None:
+            self._holding_preview_timer = self.set_timer(PREVIEW_DEBOUNCE_SECONDS, show_debounced)
+        else:
+            preview.show(None)

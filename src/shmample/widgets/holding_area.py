@@ -6,6 +6,7 @@ from textual.message import Message
 from textual.widgets import Label, ListItem, ListView
 
 from shmample import config_store
+from shmample.audio import NoPlayerFoundError, Previewer
 from shmample.config_store import Configuration, save_configuration
 from shmample.widgets.assignment_grid import AssignmentGrid
 from shmample.widgets.vim_navigation import VimGoToTopAndBottom
@@ -49,6 +50,11 @@ class HoldingArea(ListView, VimGoToTopAndBottom):
     BINDINGS = [
         Binding("j", "cursor_down", "Down (vim)", show=False),
         Binding("k", "cursor_up", "Up (vim)", show=False),
+        Binding("p", "preview_cursor_item", "Preview", show=False),
+        # Same action as ListView's own built-in "enter" binding
+        # (select_cursor) - overridden only to make it visible in the
+        # footer, same reasoning as FileBrowser's own override of "enter".
+        Binding("enter", "select_cursor", "Preview"),
         Binding("d", "remove_cursor_item", "Remove"),
         Binding("a", "assign_cursor_item", "Assign to pad"),
     ] + VimGoToTopAndBottom.BINDINGS
@@ -70,6 +76,8 @@ class HoldingArea(ListView, VimGoToTopAndBottom):
         )
         self.configuration: Configuration | None = None
         self.configuration_path: Path | None = None
+        self.previewer = Previewer()
+        self.last_previewed: Path | None = None
 
     def on_mount(self) -> None:
         self.refresh_list()
@@ -143,6 +151,27 @@ class HoldingArea(ListView, VimGoToTopAndBottom):
             self.refresh_list()
             self._save()
         return added, already_held
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        self._start_preview(self.cursor_path)
+
+    def action_preview_cursor_item(self) -> None:
+        self._start_preview(self.cursor_path)
+
+    def _start_preview(self, path: Path | None) -> None:
+        if path is None or not path.is_file():
+            return
+        self.last_previewed = path
+        # exclusive=True: a new preview kills whatever was already
+        # playing, rather than queuing behind it (see FileBrowser's own
+        # _start_preview).
+        self.run_worker(self._play(path), exclusive=True, group="preview", name="preview")
+
+    async def _play(self, path: Path) -> None:
+        try:
+            await self.previewer.play(path)
+        except NoPlayerFoundError:
+            pass
 
     def action_remove_cursor_item(self) -> None:
         if self.configuration is None or self.index is None:

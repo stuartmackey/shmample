@@ -14,6 +14,7 @@ from textual.widgets.option_list import Option
 
 from shmample import config_store, device
 from shmample.config_store import Configuration, delete_configuration, list_configurations, save_configuration
+from shmample.widgets.directory_picker import DirectoryPickerModal
 from shmample.widgets.vim_navigation import VimGoToTopAndBottom
 from shmample.widgets.vim_option_list import VimOptionList
 
@@ -296,6 +297,7 @@ class ConfigList(ListView, VimGoToTopAndBottom):
         Binding("c", "clone_selected", "Clone"),
         Binding("d", "delete_selected", "Delete"),
         Binding("s", "send_to_device", "Send"),
+        Binding("e", "export_selected", "Export"),
     ] + VimGoToTopAndBottom.BINDINGS
 
     def go_to_top(self) -> None:
@@ -567,6 +569,46 @@ class ConfigList(ListView, VimGoToTopAndBottom):
             concerning = True
 
         self.app.notify(message, severity="warning" if concerning else "information")
+
+    def action_export_selected(self) -> None:
+        """Copies the highlighted configuration's held samples out to a
+        chosen folder as plain files (see config_store.export_holding) -
+        the simple, device-agnostic way to get them out for use
+        elsewhere, as opposed to action_send_to_device's P-6-specific
+        bank/pad copy. No confirmation modal, unlike send/delete/clone -
+        unlike those, nothing existing is ever overwritten or destroyed
+        (export_holding disambiguates same-named collisions rather than
+        clobbering), so there's nothing here worth pausing to confirm."""
+        if self.index is None or not self.entries:
+            return
+        _, config = self.entries[self.index]
+        if not config.holding:
+            self.app.notify("Nothing held to export.", severity="warning")
+            return
+
+        def handle_result(destination: Path | None) -> None:
+            if destination is None:
+                return
+            self.loading = True
+            self.run_worker(
+                self._export(config, destination), exclusive=True, group="export", name="export"
+            )
+
+        self.app.push_screen(DirectoryPickerModal(Path.home()), handle_result)
+
+    async def _export(self, config: Configuration, destination: Path) -> None:
+        try:
+            result = await asyncio.to_thread(config_store.export_holding, config, destination)
+        finally:
+            self.loading = False
+
+        noun = "sample" if result.exported == 1 else "samples"
+        message = f"Exported {result.exported} {noun} to '{result.destination}'."
+        if result.missing:
+            message += f" ({len(result.missing)} missing, skipped)"
+            self.app.notify(message, severity="warning")
+        else:
+            self.app.notify(message)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         self.last_opened = self.highlighted_configuration

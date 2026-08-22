@@ -4,6 +4,7 @@ from datetime import datetime
 from shmample.config_store import (
     Configuration,
     delete_configuration,
+    export_holding,
     list_configurations,
     save_configuration,
 )
@@ -105,3 +106,95 @@ def test_delete_removes_the_file(tmp_path):
 
 def test_delete_missing_file_does_not_raise(tmp_path):
     delete_configuration(tmp_path / "does-not-exist.json")
+
+
+def test_export_holding_copies_every_held_file_into_a_named_subfolder(tmp_path):
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    kick = source_dir / "kick.wav"
+    snare = source_dir / "snare.wav"
+    kick.write_bytes(b"kick-data")
+    snare.write_bytes(b"snare-data")
+    now = datetime(2026, 1, 1)
+    config = Configuration(
+        name="My Kit", description="", created_at=now, modified_at=now, holding=[str(kick), str(snare)]
+    )
+    root = tmp_path / "export"
+
+    result = export_holding(config, root)
+
+    assert result.exported == 2
+    assert result.missing == []
+    assert result.destination == root / "my-kit"
+    assert (root / "my-kit" / "kick.wav").read_bytes() == b"kick-data"
+    assert (root / "my-kit" / "snare.wav").read_bytes() == b"snare-data"
+
+
+def test_export_holding_slugifies_the_configuration_name_for_the_folder(tmp_path):
+    now = datetime(2026, 1, 1)
+    config = Configuration(name="My Drum Kit!", description="", created_at=now, modified_at=now)
+
+    result = export_holding(config, tmp_path)
+
+    assert result.destination == tmp_path / "my-drum-kit"
+
+
+def test_export_holding_skips_and_reports_missing_sources(tmp_path):
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    kick = source_dir / "kick.wav"
+    kick.write_bytes(b"kick-data")
+    gone = source_dir / "gone.wav"  # never actually created
+    now = datetime(2026, 1, 1)
+    config = Configuration(
+        name="Kit",
+        description="",
+        created_at=now,
+        modified_at=now,
+        holding=[str(kick), str(gone)],
+    )
+
+    result = export_holding(config, tmp_path)
+
+    assert result.exported == 1
+    assert result.missing == [str(gone)]
+    assert (result.destination / "kick.wav").exists()
+
+
+def test_export_holding_disambiguates_same_named_files_from_different_folders(tmp_path):
+    folder_a = tmp_path / "a"
+    folder_b = tmp_path / "b"
+    folder_a.mkdir()
+    folder_b.mkdir()
+    kick_a = folder_a / "kick.wav"
+    kick_b = folder_b / "kick.wav"
+    kick_a.write_bytes(b"from-a")
+    kick_b.write_bytes(b"from-b")
+    now = datetime(2026, 1, 1)
+    config = Configuration(
+        name="Kit",
+        description="",
+        created_at=now,
+        modified_at=now,
+        holding=[str(kick_a), str(kick_b)],
+    )
+
+    result = export_holding(config, tmp_path)
+
+    assert result.exported == 2
+    assert (result.destination / "kick.wav").read_bytes() == b"from-a"
+    assert (result.destination / "kick-2.wav").read_bytes() == b"from-b"
+
+
+def test_export_holding_creates_the_destination_folder(tmp_path):
+    kick = tmp_path / "kick.wav"
+    kick.write_bytes(b"kick-data")
+    now = datetime(2026, 1, 1)
+    config = Configuration(
+        name="Kit", description="", created_at=now, modified_at=now, holding=[str(kick)]
+    )
+    root = tmp_path / "does" / "not" / "exist-yet"
+
+    result = export_holding(config, root)
+
+    assert (result.destination / "kick.wav").exists()

@@ -199,6 +199,52 @@ async def test_a_with_nothing_held_does_nothing(tmp_path):
         assert len(app.screen_stack) == screens_before  # no bank picker appeared
 
 
+async def test_enter_previews_the_cursor_item(tmp_path):
+    app = HoldingAreaApp(tmp_path)
+    async with app.run_test() as pilot:
+        holding = app.query_one(HoldingArea)
+        kick = tmp_path / "kick.wav"
+        kick.write_bytes(b"")
+        _activate_configuration(holding, holding_paths=[str(kick)])
+        holding.focus()
+        await pilot.pause()
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert holding.last_previewed == kick
+
+
+async def test_p_key_previews_the_cursor_item(tmp_path):
+    app = HoldingAreaApp(tmp_path)
+    async with app.run_test() as pilot:
+        holding = app.query_one(HoldingArea)
+        kick = tmp_path / "kick.wav"
+        kick.write_bytes(b"")
+        _activate_configuration(holding, holding_paths=[str(kick)])
+        holding.focus()
+        await pilot.pause()
+
+        await pilot.press("p")
+        await pilot.pause()
+
+        assert holding.last_previewed == kick
+
+
+async def test_preview_with_nothing_held_does_nothing(tmp_path):
+    app = HoldingAreaApp(tmp_path)
+    async with app.run_test() as pilot:
+        holding = app.query_one(HoldingArea)
+        _activate_configuration(holding)
+        holding.focus()
+        await pilot.pause()
+
+        await pilot.press("p")  # should not raise
+        await pilot.pause()
+
+        assert holding.last_previewed is None
+
+
 async def test_adding_to_holding_refreshes_the_configuration_list(tmp_path):
     app = ShmampleApp(samples_directories=[], configurations_dir=tmp_path)
     async with app.run_test() as pilot:

@@ -1,5 +1,6 @@
 import json
 import re
+import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -101,3 +102,55 @@ def save_configuration(
 
 def delete_configuration(path: Path) -> None:
     path.unlink(missing_ok=True)
+
+
+@dataclass
+class ExportResult:
+    exported: int
+    missing: list[str]
+    destination: Path
+
+
+def export_holding(configuration: Configuration, root: Path) -> ExportResult:
+    """Copies every held sample in `configuration` as a plain file into
+    `root`/<slugified configuration name>/ - the simplest way to get a
+    configuration's held samples out for use in other systems, with none
+    of device.send_configuration's P-6-specific bank/pad structure (or
+    its fsync durability paranoia, which exists only for removable
+    device media, not a plain host folder).
+
+    Nested under the configuration's own name (not dumped straight into
+    `root`) so exporting more than one configuration into the same
+    chosen folder over time doesn't mix their samples together - each
+    export is self-contained and identifiable by its folder name.
+    Slugified, same as save_configuration's own filename, so the name's
+    free-text origin (typed into NewConfigurationModal, no character
+    restrictions) can't produce a path separator or other filesystem-
+    unsafe folder name.
+
+    A source that's gone missing since being held is skipped and
+    reported back rather than aborting the whole export over one bad
+    file, same reasoning as send_configuration's own `missing` list. A
+    same-named collision inside that folder (e.g. two held samples both
+    called "kick.wav", from different source folders) is disambiguated
+    with a numeric suffix, the same scheme save_configuration uses for a
+    configuration's own filename - never silently overwritten.
+    """
+    target = root / _slugify(configuration.name)
+    target.mkdir(parents=True, exist_ok=True)
+    exported = 0
+    missing: list[str] = []
+    for sample_path in configuration.holding:
+        source = Path(sample_path)
+        if not source.is_file():
+            missing.append(sample_path)
+            continue
+
+        dest = target / source.name
+        counter = 2
+        while dest.exists():
+            dest = target / f"{source.stem}-{counter}{source.suffix}"
+            counter += 1
+        shutil.copy2(source, dest)
+        exported += 1
+    return ExportResult(exported=exported, missing=missing, destination=target)

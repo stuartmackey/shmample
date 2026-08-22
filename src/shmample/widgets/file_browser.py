@@ -132,6 +132,14 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
     FileBrowser {
         scrollbar-size-vertical: 1;
 
+        /* Folders already read as folders via their chevron/icon prefix -
+        the connecting guide lines just add clutter at this indent width. */
+        & > .tree--guides,
+        & > .tree--guides-hover,
+        & > .tree--guides-selected {
+            color: transparent;
+        }
+
         & > .directory-tree--folder {
             color: $secondary;
             text-style: bold;
@@ -196,6 +204,10 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
         self.selected: list[TreeNode] = []
         super().__init__("Samples", *args, **kwargs)
         self.show_root = False
+        # Narrower than Tree's own default (4) - the chevron/icon prefix on
+        # every folder already signals depth, so the full guide width just
+        # pushes filenames further right than needed.
+        self.guide_depth = 2
         # Resolved at call time, not a mutable default parameter - same
         # reasoning as ConfigList/AssignmentGrid's own configurations_dir,
         # so tests can redirect persistence to a tmp_path.
