@@ -5,7 +5,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen, Screen
 from textual.timer import Timer
-from textual.widgets import OptionList, Static
+from textual.widgets import Footer, OptionList, Static
 from textual.widgets.option_list import Option
 
 from shmample import library_scan, sample_store
@@ -110,29 +110,51 @@ class DuplicateReviewScreen(Screen):
         Binding("q", "close", "Back", show=False),
         Binding("p", "play_cursor_file", "Play"),
         Binding("d", "delete_cursor_file", "Delete"),
+        Binding("a", "allow_cursor_group", "Allow"),
+        # Numbered pane jump, same convention as ShmampleApp's own "[1]
+        # Device" etc. (app.py) - not shown in the footer since the border
+        # titles below already carry the number.
+        Binding("1", "focus_pane('#groups')", "Groups", show=False),
+        Binding("2", "focus_pane('#files')", "Copies", show=False),
+        Binding("3", "focus_pane('#preview')", "Preview", show=False),
     ]
 
     def __init__(self, db_path: Path) -> None:
         super().__init__()
         self.db_path = db_path
-        self._groups: list[list[Path]] = list(sample_store.duplicate_hash_groups(db_path).values())
+        # (content_hash, paths) rather than just paths - "allow" acts on
+        # the hash, not any one file in the group.
+        self._groups: list[tuple[str, list[Path]]] = list(
+            sample_store.duplicate_hash_groups(db_path).items()
+        )
         self.previewer = Previewer()
         self._preview_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         with Horizontal():
             groups = VimOptionList(id="groups")
-            groups.border_title = "Duplicate groups"
+            groups.border_title = "[1] Duplicate groups"
             yield groups
             with Vertical(id="right"):
                 files = VimOptionList(id="files")
-                files.border_title = "Copies"
+                files.border_title = "[2] Copies"
                 yield files
-                yield PreviewInfo(self.db_path)
+                preview = PreviewInfo(self.db_path, id="preview")
+                preview.border_title = "[3] Preview"
+                yield preview
+        # Unlike the small confirm/pick modals elsewhere (self-explanatory
+        # from their two visible option labels), this is a full working
+        # screen with several keybindings that aren't shown anywhere else
+        # in the UI - a Footer is the only thing that makes them
+        # discoverable at all.
+        yield Footer()
 
     def on_mount(self) -> None:
         self._refresh_groups(select_index=0)
         self.query_one("#groups", VimOptionList).focus()
+
+    def action_focus_pane(self, selector: str) -> None:
+        self.query_one(selector).focus()
 
     def _refresh_groups(self, select_index: int) -> None:
         groups_list = self.query_one("#groups", VimOptionList)
@@ -142,7 +164,8 @@ class DuplicateReviewScreen(Screen):
             self._refresh_files()
             return
         groups_list.add_options(
-            Option(f"Group {i + 1}: {len(paths)} files") for i, paths in enumerate(self._groups)
+            Option(f"Group {i + 1}: {len(paths)} files")
+            for i, (_, paths) in enumerate(self._groups)
         )
         groups_list.border_subtitle = f"{len(self._groups)} groups"
         groups_list.highlighted = max(0, min(select_index, len(self._groups) - 1))
@@ -151,11 +174,17 @@ class DuplicateReviewScreen(Screen):
     def _current_group_index(self) -> int | None:
         return self.query_one("#groups", VimOptionList).highlighted
 
+    def _current_group_hash(self) -> str | None:
+        index = self._current_group_index()
+        if index is None or not self._groups:
+            return None
+        return self._groups[index][0]
+
     def _current_files(self) -> list[Path]:
         index = self._current_group_index()
         if index is None or not self._groups:
             return []
-        return self._groups[index]
+        return self._groups[index][1]
 
     def _refresh_files(self) -> None:
         files_list = self.query_one("#files", VimOptionList)
@@ -235,9 +264,19 @@ class DuplicateReviewScreen(Screen):
         index = self._current_group_index()
         if index is None:
             return
-        group = self._groups[index]
-        group.remove(path)
-        if len(group) < 2:
+        content_hash, paths = self._groups[index]
+        paths.remove(path)
+        if len(paths) < 2:
             self._groups.pop(index)
         self._refresh_groups(select_index=index)
         self.app.notify(f"Deleted '{path.name}'.")
+
+    def action_allow_cursor_group(self) -> None:
+        index = self._current_group_index()
+        content_hash = self._current_group_hash()
+        if index is None or content_hash is None:
+            return
+        library_scan.allow_duplicate(content_hash, self.db_path)
+        self._groups.pop(index)
+        self._refresh_groups(select_index=index)
+        self.app.notify("Marked as an allowed duplicate - won't be flagged again.")

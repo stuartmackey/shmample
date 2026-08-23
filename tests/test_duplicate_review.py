@@ -1,8 +1,11 @@
 import wave
 
+from textual.widgets import Footer
+
 from shmample import library_scan, sample_store, tag_store
 from shmample.app import ShmampleApp
 from shmample.widgets.duplicate_review import DuplicateReviewScreen
+from shmample.widgets.preview_info import PreviewInfo
 from shmample.widgets.vim_option_list import VimOptionList
 
 
@@ -94,3 +97,63 @@ async def test_screen_deletes_a_file_and_updates_tags_and_groups(tmp_path):
         await pilot.press("escape")
         await pilot.pause()
         assert not isinstance(app.screen, DuplicateReviewScreen)
+
+
+async def test_screen_allow_untags_the_group_and_survives_a_rescan(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    root = tmp_path / "library"
+    a = root / "a.wav"
+    b = root / "pack" / "b.wav"
+    _write_wav(a, value=1000)
+    _write_wav(b, value=1000)
+    library_scan.scan_library(root, db_path)
+
+    app = ShmampleApp(samples_directories=[root], db_path=db_path)
+    async with app.run_test() as pilot:
+        await pilot.press("U")
+        await pilot.pause()
+
+        screen = app.screen
+        assert isinstance(screen, DuplicateReviewScreen)
+        await pilot.press("a")
+        await pilot.pause()
+
+        assert screen.query_one("#groups", VimOptionList).option_count == 0
+        assert tag_store.tags_for_sample(a, db_path) == set()
+        assert tag_store.tags_for_sample(b, db_path) == set()
+        # Both files are still on disk - "allow" never touches files.
+        assert a.exists()
+        assert b.exists()
+
+    library_scan.scan_library(root, db_path)
+    assert tag_store.tags_for_sample(a, db_path) == set()
+    assert tag_store.tags_for_sample(b, db_path) == set()
+
+
+async def test_screen_has_a_footer_and_numbered_pane_navigation(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    root = tmp_path / "library"
+    _write_wav(root / "a.wav", value=1000)
+    _write_wav(root / "pack" / "b.wav", value=1000)
+    library_scan.scan_library(root, db_path)
+
+    app = ShmampleApp(samples_directories=[root], db_path=db_path)
+    async with app.run_test() as pilot:
+        await pilot.press("U")
+        await pilot.pause()
+
+        screen = app.screen
+        assert isinstance(screen, DuplicateReviewScreen)
+        assert screen.query(Footer)
+
+        await pilot.press("2")
+        await pilot.pause()
+        assert screen.query_one("#files", VimOptionList).has_focus
+
+        await pilot.press("3")
+        await pilot.pause()
+        assert screen.query_one("#preview", PreviewInfo).has_focus
+
+        await pilot.press("1")
+        await pilot.pause()
+        assert screen.query_one("#groups", VimOptionList).has_focus

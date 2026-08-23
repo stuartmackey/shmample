@@ -27,6 +27,12 @@ MIGRATIONS: list[Migration] = [
         sql="ALTER TABLE samples ADD COLUMN content_hash TEXT",
         requires_rescan=True,
     ),
+    Migration(
+        version=2,
+        description="Add allowed_duplicates table for intentionally-kept duplicates",
+        sql="CREATE TABLE IF NOT EXISTS allowed_duplicates (content_hash TEXT PRIMARY KEY)",
+        requires_rescan=False,
+    ),
 ]
 
 

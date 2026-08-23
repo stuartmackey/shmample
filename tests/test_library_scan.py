@@ -144,3 +144,35 @@ def test_scan_reports_progress_starting_at_zero_before_any_file_is_processed(tmp
     assert calls[0] == (0, 2)
     assert calls[-1] == (2, 2)
     assert len(calls) == 3  # the initial 0/2, then one per file
+
+
+def test_allow_duplicate_untags_current_members(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    root = tmp_path / "library"
+    a, b = root / "a.wav", root / "pack" / "b.wav"
+    _write_wav(a, value=1000)
+    _write_wav(b, value=1000)
+    library_scan.scan_library(root, db_path)
+    content_hash = sample_store.get_cached_preview(a, db_path).content_hash
+
+    library_scan.allow_duplicate(content_hash, db_path)
+
+    assert tag_store.tags_for_sample(a, db_path) == set()
+    assert tag_store.tags_for_sample(b, db_path) == set()
+
+
+def test_allow_duplicate_excludes_the_group_from_future_rescans(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    root = tmp_path / "library"
+    a, b = root / "a.wav", root / "pack" / "b.wav"
+    _write_wav(a, value=1000)
+    _write_wav(b, value=1000)
+    library_scan.scan_library(root, db_path)
+    content_hash = sample_store.get_cached_preview(a, db_path).content_hash
+    library_scan.allow_duplicate(content_hash, db_path)
+
+    library_scan.scan_library(root, db_path)  # rescan shouldn't re-tag it
+
+    assert tag_store.tags_for_sample(a, db_path) == set()
+    assert tag_store.tags_for_sample(b, db_path) == set()
+    assert content_hash not in sample_store.duplicate_hash_groups(db_path)

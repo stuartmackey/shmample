@@ -58,6 +58,15 @@ unlikely now that it's content-hash-only, but possible - e.g. a corrupt file has
 same digest as another corrupt file), removing just the tag rather than the file isn't
 supported yet - tag removal is the next task, as before.
 
+Not every content-hash match should be deleted, though - sample packs commonly put the same
+hit in both a "Kits" folder and a separate individual-hits folder, deliberately. Rather than
+try to infer that pattern from folder names (tried and rejected - too fragile, same lesson as
+`auto_tag.py`'s naming-convention vocabulary), the review screen has an `a` "Allow" action: it
+marks the group's content hash as an intentionally-kept duplicate (a small `allowed_duplicates`
+table, added via the migration system above) and removes the tag from its files without
+touching them. An allowed hash is excluded from all future duplicate detection, so a rescan
+won't re-flag it. There's no "un-allow" UI yet if a decision needs reversing later.
+
 ## Performance
 
 The new ingestion will be slow, we need to give progress, maybe show total sample count and how many have been ingested, updated as we progress

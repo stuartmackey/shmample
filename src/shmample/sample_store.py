@@ -48,6 +48,9 @@ def _connect(db_path: Path) -> sqlite3.Connection:
         )
         """
     )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS allowed_duplicates (content_hash TEXT PRIMARY KEY)"
+    )
     return connection
 
 
@@ -168,12 +171,17 @@ def duplicate_hash_groups(db_path: Path = DEFAULT_DB_PATH) -> dict[str, list[Pat
     """Every set of 2+ paths sharing a non-null content_hash, across the
     whole library - not scoped to any particular root, since a match
     against a file ingested from a different configured samples directory
-    should still be caught."""
+    should still be caught. Excludes any hash marked allowed (see
+    mark_duplicate_allowed) - this is the one place both the duplicate
+    review screen and library_scan._tag_duplicates read groups from, so
+    excluding here is what keeps a rescan from re-flagging something the
+    user already decided to keep (e.g. a kit vs. its own individual hits)."""
     with contextlib.closing(_connect(db_path)) as connection:
         rows = connection.execute(
             """
             SELECT content_hash, path FROM samples
             WHERE content_hash IS NOT NULL
+                AND content_hash NOT IN (SELECT content_hash FROM allowed_duplicates)
             ORDER BY content_hash
             """
         ).fetchall()
@@ -182,6 +190,18 @@ def duplicate_hash_groups(db_path: Path = DEFAULT_DB_PATH) -> dict[str, list[Pat
     for content_hash, path in rows:
         groups.setdefault(content_hash, []).append(Path(path))
     return {key: paths for key, paths in groups.items() if len(paths) > 1}
+
+
+def mark_duplicate_allowed(content_hash: str, db_path: Path = DEFAULT_DB_PATH) -> None:
+    """Marks `content_hash` as an intentionally-kept duplicate - excluded
+    from duplicate_hash_groups (and so from tagging/the review screen)
+    from now on, until this row is removed (no UI for that yet)."""
+    with contextlib.closing(_connect(db_path)) as connection:
+        with connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO allowed_duplicates (content_hash) VALUES (?)",
+                (content_hash,),
+            )
 
 
 def paths_with_hash(content_hash: str, db_path: Path = DEFAULT_DB_PATH) -> list[Path]:

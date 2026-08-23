@@ -98,6 +98,17 @@ def delete_duplicate(path: Path, db_path: Path = DEFAULT_DB_PATH) -> None:
                 tag_store.remove_tag_from_sample(survivor, DUPLICATE_TAG, db_path)
 
 
+def allow_duplicate(content_hash: str, db_path: Path = DEFAULT_DB_PATH) -> None:
+    """Marks `content_hash` as an intentionally-kept duplicate (e.g. a kit
+    vs. its own individual hits - same content, deliberately present in
+    both places) and untags every path currently sharing it. Reads the
+    current member list from the database rather than trusting a caller's
+    in-memory group, so it stays correct even if that's gone stale."""
+    sample_store.mark_duplicate_allowed(content_hash, db_path)
+    for path in sample_store.paths_with_hash(content_hash, db_path):
+        tag_store.remove_tag_from_sample(path, DUPLICATE_TAG, db_path)
+
+
 def scan_library(
     root: Path,
     db_path: Path = DEFAULT_DB_PATH,

@@ -73,3 +73,36 @@ def test_clear_rescan_pending_is_a_no_op_when_nothing_is_pending(tmp_path):
     migrations.clear_rescan_pending(db_path)
 
     assert migrations.is_rescan_pending(db_path) is False
+
+
+def test_fresh_database_has_the_allowed_duplicates_table(tmp_path):
+    db_path = tmp_path / "shmample.db"
+
+    migrations.run_migrations(db_path)
+
+    connection = sqlite3.connect(db_path)
+    tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master")}
+    connection.close()
+    assert "allowed_duplicates" in tables
+
+
+def test_database_already_at_version_1_gains_allowed_duplicates_without_a_rescan(tmp_path):
+    """A database that already went through the content_hash migration
+    (version 1) shouldn't be asked to rescan again just because a later,
+    purely-additive migration (the allowed_duplicates table) came along -
+    requires_rescan is per-migration, not "any migration ran"."""
+    db_path = tmp_path / "shmample.db"
+    _create_legacy_database(db_path)
+    connection = sqlite3.connect(db_path)
+    connection.execute("ALTER TABLE samples ADD COLUMN content_hash TEXT")
+    connection.execute("PRAGMA user_version = 1")
+    connection.commit()
+    connection.close()
+
+    migrations.run_migrations(db_path)
+
+    connection = sqlite3.connect(db_path)
+    tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master")}
+    connection.close()
+    assert "allowed_duplicates" in tables
+    assert migrations.is_rescan_pending(db_path) is False
