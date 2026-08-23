@@ -1,7 +1,12 @@
 import struct
 import wave
 
-from shmample.waveform import get_duration_seconds, get_format_info, load_waveform_peaks
+from shmample.waveform import (
+    compute_content_hash,
+    get_duration_seconds,
+    get_format_info,
+    load_waveform_peaks,
+)
 
 
 def _write_constant_tone(path, sample_width_bytes, amplitude=0.5, seconds=0.5, sample_rate=8000):
@@ -36,6 +41,33 @@ def test_decodes_16bit_wav_into_normalised_peaks(tmp_path):
 
     assert len(peaks) == 40
     assert all(0.4 < p < 0.6 for p in peaks)
+
+
+def test_content_hash_ignores_bytes_appended_after_the_pcm_data(tmp_path):
+    """Two files with identical decoded PCM but different raw bytes (e.g.
+    the same audio re-saved with extra header/metadata) still hash equal -
+    the whole point of hashing decoded samples rather than the file bytes
+    (02-find-duplicates.md)."""
+    original = tmp_path / "kick.wav"
+    _write_constant_tone(original, sample_width_bytes=2)
+
+    copy_with_extra_bytes = tmp_path / "kick-copy.wav"
+    copy_with_extra_bytes.write_bytes(original.read_bytes() + b"trailing-metadata-junk")
+
+    assert compute_content_hash(original) == compute_content_hash(copy_with_extra_bytes)
+
+
+def test_content_hash_differs_for_different_audio(tmp_path):
+    quiet = tmp_path / "quiet.wav"
+    loud = tmp_path / "loud.wav"
+    _write_constant_tone(quiet, sample_width_bytes=2, amplitude=0.2)
+    _write_constant_tone(loud, sample_width_bytes=2, amplitude=0.8)
+
+    assert compute_content_hash(quiet) != compute_content_hash(loud)
+
+
+def test_content_hash_returns_none_for_a_missing_file(tmp_path):
+    assert compute_content_hash(tmp_path / "does-not-exist.wav") is None
 
 
 def test_decodes_8bit_wav_into_normalised_peaks(tmp_path):

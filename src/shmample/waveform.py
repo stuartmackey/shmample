@@ -1,4 +1,5 @@
 import array
+import hashlib
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -72,6 +73,41 @@ def get_duration_seconds(path: Path) -> float | None:
             if frame_rate <= 0:
                 return None
             return wav_file.getnframes() / frame_rate
+    except Exception:
+        return None
+
+
+# Frames read/hashed per chunk (02-find-duplicates.md's "read in chunks
+# rather than loading the whole PCM buffer at once") - keeps peak memory
+# bounded on a large sample regardless of file size.
+_HASH_CHUNK_FRAMES = 1_000_000
+
+
+def compute_content_hash(path: Path) -> str | None:
+    """SHA-256 of the decoded PCM sample bytes (via wave.readframes,
+    chunked), not the raw file bytes - so two files carrying the same
+    audio under different header/metadata still hash equal
+    (02-find-duplicates.md). Hashes the raw interleaved bytes directly,
+    not the first-channel float view _decode_samples produces for peaks -
+    duplicate detection wants the exact PCM data across every channel.
+
+    Only matches bit-identical PCM at the same encoding - a different bit
+    depth or sample rate for "the same" audio deliberately still hashes
+    differently, that's out of scope (would need real audio
+    fingerprinting).
+
+    Returns None if the file can't be read, same degrade-gracefully
+    convention as every other probe in this module.
+    """
+    try:
+        hasher = hashlib.sha256()
+        with wave.open(str(path), "rb") as wav_file:
+            while True:
+                chunk = wav_file.readframes(_HASH_CHUNK_FRAMES)
+                if not chunk:
+                    break
+                hasher.update(chunk)
+        return hasher.hexdigest()
     except Exception:
         return None
 

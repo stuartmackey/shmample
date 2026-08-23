@@ -7,10 +7,11 @@ from textual.css.query import NoMatches
 from textual.timer import Timer
 from textual.widgets import Footer, ListView
 
-from shmample import device
+from shmample import device, migrations, sample_store
 from shmample.widgets.assignment_grid import AssignmentGrid
 from shmample.widgets.config_list import ConfigList
 from shmample.widgets.device_panel import DevicePanel
+from shmample.widgets.duplicate_review import DuplicateReviewScreen
 from shmample.widgets.file_browser import FileBrowser
 from shmample.widgets.holding_area import HoldingArea
 from shmample.widgets.main_column import PREVIEW_DEBOUNCE_SECONDS, MainColumn
@@ -61,6 +62,11 @@ class ShmampleApp(App):
         Binding("ctrl+j", "focus_direction('down')", "Pane down", show=False),
         Binding("ctrl+k", "focus_direction('up')", "Pane up", show=False),
         Binding("ctrl+l", "focus_direction('right')", "Pane right", show=False),
+        # Capital, not lowercase "u" - DevicePanel already owns lowercase
+        # "u" for Unmount (device_panel.py:36), scoped to while that pane
+        # is focused; an App-level fallback on the same letter would leak
+        # into the footer everywhere else it's not actually being shadowed.
+        Binding("U", "review_duplicates", "Duplicates"),
     ]
 
     # The layout (see MainColumn.compose and ShmampleApp.compose) isn't a
@@ -90,6 +96,14 @@ class ShmampleApp(App):
         target = self.PANE_ADJACENCY.get(focused.id, {}).get(direction)
         if target is not None:
             self.query_one(f"#{target}").focus()
+
+    def action_review_duplicates(self) -> None:
+        db_path = self.db_path if self.db_path is not None else sample_store.DEFAULT_DB_PATH
+
+        def handle_result(_: None) -> None:
+            self.query_one("#tags", TagBrowser).refresh_list()
+
+        self.push_screen(DuplicateReviewScreen(db_path), handle_result)
 
     def __init__(
         self,
@@ -138,6 +152,15 @@ class ShmampleApp(App):
         yield Footer()
 
     async def on_mount(self) -> None:
+        # Same None-fallback reasoning as FileBrowser's own db_path -
+        # self.db_path is None in real usage (__main__.py never passes it).
+        db_path = self.db_path if self.db_path is not None else sample_store.DEFAULT_DB_PATH
+        if migrations.is_rescan_pending(db_path):
+            self.notify(
+                "New functionality needs a rescan - press Shift+R on a folder to update it.",
+                severity="warning",
+            )
+
         self.device_state = await device.detect_or_mount()
         self.query_one("#device", DevicePanel).show(self.device_state)
         # ConfigList's own on_mount already ran (and rendered) before

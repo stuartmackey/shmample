@@ -11,7 +11,7 @@ from textual.message import Message
 from textual.widgets import Tree
 from textual.widgets.tree import TreeNode
 
-from shmample import auto_tag, sample_store, tag_store
+from shmample import auto_tag, library_scan, sample_store, tag_store
 from shmample import settings as settings_module
 from shmample.audio import NoPlayerFoundError, Previewer
 from shmample.widgets.directory_picker import DirectoryPickerModal
@@ -170,6 +170,7 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
         Binding("A", "add_samples_directory", "Add path"),
         Binding("D", "remove_samples_directory", "Remove path"),
         Binding("t", "auto_tag_cursor_node", "Auto-tag"),
+        Binding("R", "rescan_cursor_node", "Rescan"),
         Binding(".", "focus_cursor_folder", "Focus folder"),
         # Replaces Tree's own "space" (toggle_node) entirely, not just
         # for files - action_toggle_select_or_node below falls back to
@@ -608,6 +609,49 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
     def _set_tagging_progress(self, index: int, total: int) -> None:
         self.border_subtitle = f"Auto-tagging... {index}/{total}"
 
+    def action_rescan_cursor_node(self) -> None:
+        node = self.cursor_node
+        if node is None or node.data is None or not node.allow_expand:
+            return
+        path = node.data.path
+        # Deliberately not self.loading = True here (unlike auto-tag above) -
+        # Widget.loading covers the whole widget with a plain spinner
+        # (Widget.set_loading's self._cover), which hides the border and
+        # its subtitle underneath. That's fine for auto-tag (fast enough
+        # nobody notices), but it silently swallowed this feature's actual
+        # "N/total" progress text, which is the whole point here - a
+        # spinner with no numbers is exactly what looked "stuck" to begin
+        # with. The border_subtitle text itself already conveys "something
+        # is happening", so the spinner isn't needed.
+        self.border_subtitle = "Rescanning..."
+        self.run_worker(
+            self._rescan_folder(path), exclusive=True, group="rescan", name="rescan"
+        )
+
+    async def _rescan_folder(self, path: Path) -> None:
+        # No throttling interval here unlike auto-tag's TAGGING_PROGRESS_
+        # INTERVAL - a rescan decodes/hashes whole files, which dominates
+        # the per-file cost far more than a cross-thread UI update does, so
+        # every file getting its own progress update is cheap and (per user
+        # feedback - a scan looked "stuck" with only sparse updates) is
+        # what actually makes progress visible rather than looking hung.
+        def on_progress(index: int, total: int) -> None:
+            self.app.call_from_thread(self._set_rescan_progress, index, total)
+
+        try:
+            count = await asyncio.to_thread(
+                library_scan.scan_library, path, self.db_path, on_progress
+            )
+        finally:
+            self.border_subtitle = ""
+        noun = "sample" if count == 1 else "samples"
+        self.app.notify(f"Rescanned {count} {noun} under '{path.name}'.")
+        self.post_message(self.Tagged())
+
+    def _set_rescan_progress(self, index: int, total: int) -> None:
+        percent = f" ({index / total:.0%})" if total else ""
+        self.border_subtitle = f"Rescanning... {index}/{total}{percent}"
+
     def action_add_samples_directory(self) -> None:
         def handle_result(directory: Path | None) -> None:
             if directory is None or directory in self.samples_directories:
@@ -641,6 +685,9 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
             return self._cursor_on_root_path() is not None
         if action == "add_samples_directory":
             return not self._root_focus_stack
+        if action == "rescan_cursor_node":
+            node = self.cursor_node
+            return node is not None and node.data is not None and node.allow_expand
         return True
 
     def action_remove_samples_directory(self) -> None:

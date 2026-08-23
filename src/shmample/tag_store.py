@@ -40,6 +40,14 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     return connection
 
 
+def ensure_schema(db_path: Path = DEFAULT_DB_PATH) -> None:
+    """Ensures the tags/sample_tags tables exist - for callers
+    (migrations.py) that need the schema present before doing anything
+    else, without reaching into the private _connect."""
+    with contextlib.closing(_connect(db_path)):
+        pass
+
+
 def connect(db_path: Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
     """Opens a connection with the schema already ensured, for a caller
     that wants to share one connection/transaction across many writes -

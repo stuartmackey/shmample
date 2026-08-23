@@ -1,6 +1,7 @@
 import argparse
 from pathlib import Path
 
+from shmample import migrations
 from shmample.app import ShmampleApp
 from shmample.settings import load_settings, save_settings
 
@@ -14,6 +15,8 @@ def main() -> None:
         "runs, on top of whatever's already configured (see Shift+A in the samples pane).",
     )
     args = parser.parse_args()
+
+    migrations.run_migrations()
 
     settings = load_settings()
     if args.samples_dir is not None:
