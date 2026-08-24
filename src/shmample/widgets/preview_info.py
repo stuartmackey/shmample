@@ -44,7 +44,7 @@ class PreviewInfo(Vertical):
     handful of rows this pane gets, that chrome ate most of the space
     and left too little vertical resolution to see any shape.
 
-    can_focus=True purely so numbered pane-jump (3, see app.py) has
+    can_focus=True purely so numbered pane-jump (6, see app.py) has
     somewhere to land - this pane has no bindings/interaction of its own.
 
     Duration/format/waveform are cached in sample_store (01-auto-tagging.md)
@@ -59,9 +59,17 @@ class PreviewInfo(Vertical):
 
     can_focus = True
 
+    # Borders itself (as TagBrowser/HoldingArea/AssignmentGrid do) rather
+    # than relying on a parent's CSS - it sits in #browse-column (app.py's
+    # compose), not nested inside a column that borders its children for
+    # it the way MainColumn still does for ConfigList/FileBrowser.
     DEFAULT_CSS = """
     PreviewInfo {
         height: 1fr;
+        border: round $foreground;
+    }
+    PreviewInfo:focus {
+        border: round $primary;
     }
     PreviewInfo > #preview-date {
         height: 1;

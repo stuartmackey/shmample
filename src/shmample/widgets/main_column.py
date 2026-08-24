@@ -2,39 +2,42 @@ from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.containers import Vertical
-from textual.timer import Timer
-from textual.widgets import Tree
 
 from shmample import config_store
 from shmample.widgets.config_list import ConfigList
 from shmample.widgets.device_panel import DevicePanel
 from shmample.widgets.file_browser import FileBrowser
-from shmample.widgets.preview_info import PreviewInfo
 
-# How long the cursor has to sit still on a file before its preview
-# (stat + duration/format probe + waveform decode, see PreviewInfo.show)
-# actually loads - scrolling quickly through the tree would otherwise
-# generate one of these, synchronously on the UI thread, per file
-# briefly passed over, which is what made scrolling feel sluggish.
+# How long the cursor has to sit still on a highlighted sample before its
+# preview (stat + duration/format probe + waveform decode, see
+# PreviewInfo.show) actually loads - scrolling quickly through a list
+# would otherwise generate one of these, synchronously on the UI thread,
+# per item briefly passed over, which is what made scrolling feel
+# sluggish. Defined here (rather than app.py, which actually uses it for
+# FileBrowser/HoldingArea preview debouncing) and re-exported, since
+# duplicate_review.py needs it too and importing from app.py would be
+# circular - app.py already imports DuplicateReviewScreen.
 PREVIEW_DEBOUNCE_SECONDS = 0.15
 
 
 class MainColumn(Vertical):
-    """Device status, configuration list, file browser, and its preview
-    info pane, all stacked in one column - lazygit-style (status/branches
-    above files), not a 2x2 grid. See 06-configuration-list.md for why.
+    """Device status and pack list, stacked above the file browser in one
+    column - lazygit-style (status/branches above files), not a 2x2 grid.
+    See 06-configuration-list.md for why.
 
-    Tags used to live here too, side by side with FileBrowser in a
-    "samples-row" - moved out to its own top-level column (see app.py's
-    compose) once Holding and Assignments started competing for the same
-    row's width. FileBrowser/TagBrowser's own cross-talk (tag filtering,
-    folder-scoping, refreshing the tag list after a tag) now happens at
-    the App level instead, since TagBrowser is no longer a descendant of
-    this widget for those messages to bubble through."""
+    Tags, Holding, and Preview all used to live here too - moved out to
+    their own column (see app.py's compose) so packs/samples could have
+    the first column to themselves and Preview could span the width of
+    the other two instead of being squeezed under Samples. Their various
+    cross-talk with this column's widgets (tag filtering, folder-scoping,
+    refreshing the tag list after a tag, showing a highlighted sample in
+    Preview) now all happens at the App level instead, since none of them
+    are descendants of this widget any more for those messages to bubble
+    through."""
 
-    # :focus border colour is shared across every pane (here, DevicePanel,
-    # AssignmentGrid) so "which pane is active" reads the same way
-    # everywhere, not just in the ones that happen to live in this column.
+    # :focus border colour is shared across every pane (here, DevicePanel)
+    # so "which pane is active" reads the same way everywhere, not just in
+    # the ones that happen to live in this column.
     DEFAULT_CSS = """
     MainColumn {
         width: 1fr;
@@ -53,13 +56,6 @@ class MainColumn(Vertical):
         border: round $foreground;
     }
     MainColumn > FileBrowser:focus {
-        border: round $primary;
-    }
-    MainColumn > PreviewInfo {
-        height: 1fr;
-        border: round $foreground;
-    }
-    MainColumn > PreviewInfo:focus {
         border: round $primary;
     }
     """
@@ -82,50 +78,24 @@ class MainColumn(Vertical):
         )
         self.settings_path = settings_path
         self.db_path = db_path
-        self._preview_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         device_panel = DevicePanel(id="device")
         device_panel.border_title = "[1] Device"
+        # Parked, not deleted - per 03-handling-multiple-devices.md, the
+        # sample-management side of the app doesn't need the device pane
+        # right now (that's the separate device-configuration screen this
+        # task doesn't build yet). Still mounted so ShmampleApp's on_mount/
+        # _poll_device device_state handling keeps working unchanged -
+        # display:none only affects layout/paint, not the DOM. Same
+        # reasoning as AssignmentGrid's own display=False in app.py.
+        device_panel.display = False
         yield device_panel
 
-        configs = ConfigList(self.configurations_dir, id="configurations")
-        configs.border_title = "[2] Configurations"
+        configs = ConfigList(self.configurations_dir, id="packs")
+        configs.border_title = "[2] Packs"
         yield configs
 
         files = FileBrowser(self.samples_directories, self.settings_path, self.db_path, id="files")
         files.border_title = "[3] Samples"
         yield files
-
-        preview = PreviewInfo(self.db_path, id="preview")
-        preview.border_title = "[4] Preview"
-        yield preview
-
-    def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
-        if self._preview_timer is not None:
-            self._preview_timer.stop()
-            self._preview_timer = None
-
-        node = event.node
-        preview = self.query_one(PreviewInfo)
-        if node.data is not None and not node.allow_expand:
-            path = node.data.path
-            self._preview_timer = self.set_timer(
-                PREVIEW_DEBOUNCE_SECONDS, lambda: preview.show(path)
-            )
-        else:
-            # Cheap (just clears the pane) - no need to debounce this side.
-            preview.show(None)
-
-    def on_file_browser_tagged(self, message: FileBrowser.Tagged) -> None:
-        # Re-show whatever's currently highlighted so a just-tagged file's
-        # new tags show up in the preview pane immediately, rather than
-        # only on the next time it's highlighted. Refreshing the tag
-        # list itself is the App's job now (see ShmampleApp.on_file_browser_tagged)
-        # - TagBrowser isn't a descendant of this widget any more.
-        node = self.query_one("#files", FileBrowser).cursor_node
-        preview = self.query_one(PreviewInfo)
-        if node is not None and node.data is not None and not node.allow_expand:
-            preview.show(node.data.path)
-        else:
-            preview.show(None)

@@ -35,10 +35,13 @@ class HoldingArea(ListView, VimGoToTopAndBottom):
     a pad).
     """
 
+    # No max-width cap (as ConfigList/MainColumn still have, being one of
+    # three top-level columns) - this sits in #tags-holding-row (app.py's
+    # compose) as one of only two children sharing that row, so an even
+    # 1fr:1fr split with TagBrowser is exactly what's wanted.
     DEFAULT_CSS = """
     HoldingArea {
         width: 1fr;
-        max-width: 33%;
         height: 1fr;
         border: round $foreground;
     }
@@ -95,7 +98,7 @@ class HoldingArea(ListView, VimGoToTopAndBottom):
 
     def refresh_list(self) -> None:
         previous_index = self.index
-        held = self.configuration.holding if self.configuration is not None else []
+        held = self.configuration.pack.holding if self.configuration is not None else []
 
         self.clear()
         if not held:
@@ -120,7 +123,7 @@ class HoldingArea(ListView, VimGoToTopAndBottom):
     def cursor_path(self) -> Path | None:
         if self.configuration is None or self.index is None:
             return None
-        held = self.configuration.holding
+        held = self.configuration.pack.holding
         if self.index >= len(held):
             return None
         return Path(held[self.index])
@@ -128,14 +131,14 @@ class HoldingArea(ListView, VimGoToTopAndBottom):
     def add_samples(self, sample_paths: list[Path]) -> tuple[list[Path], list[Path]]:
         """Appends every one of `sample_paths` not already held, in
         order - re-adding an already-held path is a no-op rather than a
-        duplicate entry (see Configuration.holding's docstring). Returns
+        duplicate entry (see Pack.holding's docstring). Returns
         (added, already_held) so the caller (FileBrowser) can report
         both counts back to the user.
         """
         if self.configuration is None:
             return [], []
 
-        already = set(self.configuration.holding)
+        already = set(self.configuration.pack.holding)
         added: list[Path] = []
         already_held: list[Path] = []
         for path in sample_paths:
@@ -143,7 +146,7 @@ class HoldingArea(ListView, VimGoToTopAndBottom):
             if key in already:
                 already_held.append(path)
                 continue
-            self.configuration.holding.append(key)
+            self.configuration.pack.holding.append(key)
             already.add(key)
             added.append(path)
 
@@ -176,7 +179,7 @@ class HoldingArea(ListView, VimGoToTopAndBottom):
     def action_remove_cursor_item(self) -> None:
         if self.configuration is None or self.index is None:
             return
-        held = self.configuration.holding
+        held = self.configuration.pack.holding
         if self.index >= len(held):
             return
         held.pop(self.index)
@@ -200,6 +203,6 @@ class HoldingArea(ListView, VimGoToTopAndBottom):
     def _save(self) -> None:
         if self.configuration is None or self.configuration_path is None:
             return
-        self.configuration.modified_at = datetime.now()
+        self.configuration.pack.modified_at = datetime.now()
         save_configuration(self.configuration, self.configurations_dir, self.configuration_path)
         self.post_message(self.Saved())

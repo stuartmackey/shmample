@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from shmample import device
-from shmample.config_store import Configuration
+from shmample.config_store import Configuration, Pack
 from shmample.device import (
     ALL_MODES,
     MODE_BACKUP,
@@ -29,7 +29,8 @@ from shmample.device import (
 def _configuration(assignments=None):
     now = datetime(2026, 1, 1)
     return Configuration(
-        name="Kit", description="", created_at=now, modified_at=now, assignments=assignments or {}
+        pack=Pack(name="Kit", description="", created_at=now, modified_at=now),
+        assignments=assignments or {},
     )
 
 

@@ -32,14 +32,16 @@ class TagBrowser(ListView, VimGoToTopAndBottom):
     Vertical-only, like ConfigList, so it only needs vim's j/k/gg/G.
     """
 
-    # Its own top-level column now (app.py's compose), not nested inside
-    # MainColumn's "samples-row" any more - so, like AssignmentGrid/
-    # HoldingArea, it needs to size and border itself rather than relying
-    # on a parent's CSS.
+    # Sits in #tags-holding-row (app.py's compose) side by side with
+    # HoldingArea, not nested inside MainColumn's "samples-row" any more -
+    # so, like AssignmentGrid/HoldingArea, it needs to size and border
+    # itself rather than relying on a parent's CSS. No max-width cap (as
+    # ConfigList/MainColumn still have, being one of three top-level
+    # columns) - here it's one of only two children sharing that row, so
+    # an even 1fr:1fr split is exactly what's wanted.
     DEFAULT_CSS = """
     TagBrowser {
         width: 1fr;
-        max-width: 33%;
         height: 1fr;
         border: round $foreground;
     }

@@ -410,7 +410,9 @@ class AssignmentGrid(DataTable, VimGoToTopAndBottom):
                 self.set_assignments({})
 
         self.app.push_screen(
-            ConfirmClearAllModal(self.configuration.name, len(self.configuration.assignments)),
+            ConfirmClearAllModal(
+                self.configuration.pack.name, len(self.configuration.assignments)
+            ),
             handle_result,
         )
 
@@ -448,6 +450,6 @@ class AssignmentGrid(DataTable, VimGoToTopAndBottom):
         """
         if self.configuration is None or self.configuration_path is None:
             return
-        self.configuration.modified_at = datetime.now()
+        self.configuration.pack.modified_at = datetime.now()
         save_configuration(self.configuration, self.configurations_dir, self.configuration_path)
         self.post_message(self.Saved())
