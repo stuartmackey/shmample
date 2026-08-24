@@ -5,7 +5,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Label
 
 from shmample.app import ShmampleApp
-from shmample.config_store import Configuration, list_configurations, save_configuration
+from shmample.config_store import Configuration, Pack, list_configurations, save_configuration
 from shmample.widgets.assignment_grid import AssignmentGrid
 from shmample.widgets.config_list import ConfigList
 from shmample.widgets.holding_area import HoldingArea
@@ -26,7 +26,13 @@ def _activate_configuration(
 ) -> tuple[Path, Configuration]:
     now = datetime(2026, 1, 1)
     config = Configuration(
-        name=name, description="", created_at=now, modified_at=now, holding=list(holding_paths)
+        pack=Pack(
+            name=name,
+            description="",
+            created_at=now,
+            modified_at=now,
+            holding=list(holding_paths),
+        )
     )
     path = save_configuration(config, holding.configurations_dir)
     holding.load((path, config))
@@ -85,7 +91,7 @@ async def test_add_samples_appends_new_ones_in_order(tmp_path):
 
         assert added == [Path("/samples/kick.wav"), Path("/samples/snare.wav")]
         assert already_held == []
-        assert holding.configuration.holding == ["/samples/kick.wav", "/samples/snare.wav"]
+        assert holding.configuration.pack.holding == ["/samples/kick.wav", "/samples/snare.wav"]
 
 
 async def test_add_samples_skips_already_held_without_duplicating(tmp_path):
@@ -100,7 +106,7 @@ async def test_add_samples_skips_already_held_without_duplicating(tmp_path):
 
         assert added == [Path("/samples/snare.wav")]
         assert already_held == [Path("/samples/kick.wav")]
-        assert holding.configuration.holding == ["/samples/kick.wav", "/samples/snare.wav"]
+        assert holding.configuration.pack.holding == ["/samples/kick.wav", "/samples/snare.wav"]
 
 
 async def test_add_samples_without_an_active_configuration_does_nothing(tmp_path):
@@ -124,7 +130,7 @@ async def test_add_samples_autosaves_to_disk_immediately(tmp_path):
         holding.add_samples([Path("/samples/kick.wav")])
 
         [(_, loaded)] = list_configurations(tmp_path)
-        assert loaded.holding == ["/samples/kick.wav"]
+        assert loaded.pack.holding == ["/samples/kick.wav"]
 
 
 async def test_d_removes_the_cursor_item(tmp_path):
@@ -140,11 +146,11 @@ async def test_d_removes_the_cursor_item(tmp_path):
         await pilot.press("d")
         await pilot.pause()
 
-        assert holding.configuration.holding == ["/samples/snare.wav"]
+        assert holding.configuration.pack.holding == ["/samples/snare.wav"]
         labels = [str(label.render()) for label in holding.query(Label)]
         assert labels == ["snare.wav"]
         [(_, loaded)] = list_configurations(tmp_path)
-        assert loaded.holding == ["/samples/snare.wav"]
+        assert loaded.pack.holding == ["/samples/snare.wav"]
 
 
 async def test_d_with_nothing_held_does_nothing(tmp_path):
@@ -158,7 +164,7 @@ async def test_d_with_nothing_held_does_nothing(tmp_path):
         await pilot.press("d")  # should not raise
         await pilot.pause()
 
-        assert holding.configuration.holding == []
+        assert holding.configuration.pack.holding == []
 
 
 async def test_a_opens_the_assign_chord_for_the_cursor_item_and_assigns(tmp_path):
@@ -181,7 +187,7 @@ async def test_a_opens_the_assign_chord_for_the_cursor_item_and_assigns(tmp_path
         assert grid.configuration.assignments[("E", "4")] == "/samples/kick.wav"
         # The held sample itself is untouched by assigning it to a pad -
         # a sample can still be placed on more than one pad later.
-        assert holding.configuration.holding == ["/samples/kick.wav"]
+        assert holding.configuration.pack.holding == ["/samples/kick.wav"]
 
 
 async def test_a_with_nothing_held_does_nothing(tmp_path):
@@ -249,7 +255,7 @@ async def test_adding_to_holding_refreshes_the_configuration_list(tmp_path):
     app = ShmampleApp(samples_directories=[], configurations_dir=tmp_path)
     async with app.run_test() as pilot:
         holding = app.query_one("#holding", HoldingArea)
-        configs = app.query_one("#configurations", ConfigList)
+        configs = app.query_one("#packs", ConfigList)
         # Saved directly to disk, bypassing ConfigList's own "n" - the
         # list hasn't picked it up yet, which is exactly what this test
         # is checking gets fixed by the add below.
@@ -259,4 +265,4 @@ async def test_adding_to_holding_refreshes_the_configuration_list(tmp_path):
         holding.add_samples([Path("/samples/kick.wav")])
         await pilot.pause()
 
-        assert [c.name for _, c in configs.entries] == ["New Kit"]
+        assert [c.pack.name for _, c in configs.entries] == ["New Kit"]

@@ -13,7 +13,13 @@ from textual.widgets import Input, Label, ListItem, ListView, OptionList, Static
 from textual.widgets.option_list import Option
 
 from shmample import config_store, device
-from shmample.config_store import Configuration, delete_configuration, list_configurations, save_configuration
+from shmample.config_store import (
+    Configuration,
+    Pack,
+    delete_configuration,
+    list_configurations,
+    save_configuration,
+)
 from shmample.widgets.directory_picker import DirectoryPickerModal
 from shmample.widgets.vim_navigation import VimGoToTopAndBottom
 from shmample.widgets.vim_option_list import VimOptionList
@@ -356,7 +362,7 @@ class ConfigList(ListView, VimGoToTopAndBottom):
 
         self.entries = sorted(
             list_configurations(self.configurations_dir),
-            key=lambda entry: entry[1].name.lower(),
+            key=lambda entry: entry[1].pack.name.lower(),
         )
         self.clear()
         if not self.entries:
@@ -404,7 +410,7 @@ class ConfigList(ListView, VimGoToTopAndBottom):
         (including when there's nothing connected to judge it against -
         showing the size is still useful even with no verdict attached).
         """
-        label = Text(config.name)
+        label = Text(config.pack.name)
         size_bytes = device.configuration_size_bytes(config)
         if size_bytes:
             too_large = available is not None and size_bytes > available
@@ -424,7 +430,7 @@ class ConfigList(ListView, VimGoToTopAndBottom):
             name, description = result
             now = datetime.now()
             config = Configuration(
-                name=name, description=description, created_at=now, modified_at=now
+                pack=Pack(name=name, description=description, created_at=now, modified_at=now)
             )
             path = save_configuration(config, self.configurations_dir)
             self.refresh_list()
@@ -447,16 +453,18 @@ class ConfigList(ListView, VimGoToTopAndBottom):
                 return
             now = datetime.now()
             clone = Configuration(
-                name=f"Copy of {config.name}",
-                description=config.description,
-                created_at=now,
-                modified_at=now,
+                pack=Pack(
+                    name=f"Copy of {config.pack.name}",
+                    description=config.pack.description,
+                    created_at=now,
+                    modified_at=now,
+                ),
                 assignments=dict(config.assignments),
             )
             save_configuration(clone, self.configurations_dir)
             self.refresh_list()
 
-        self.app.push_screen(ConfirmCloneModal(config.name), handle_result)
+        self.app.push_screen(ConfirmCloneModal(config.pack.name), handle_result)
 
     def action_delete_selected(self) -> None:
         if self.index is None or not self.entries:
@@ -468,7 +476,7 @@ class ConfigList(ListView, VimGoToTopAndBottom):
                 delete_configuration(path)
                 self.refresh_list()
 
-        self.app.push_screen(ConfirmDeleteModal(config.name), handle_result)
+        self.app.push_screen(ConfirmDeleteModal(config.pack.name), handle_result)
 
     def action_send_to_device(self) -> None:
         if self.index is None or not self.entries:
@@ -496,7 +504,7 @@ class ConfigList(ListView, VimGoToTopAndBottom):
         space = device.check_available_space(config, state.mount)
         if not space.fits:
             self.app.notify(
-                f"'{config.name}' needs ~{device.human_bytes(space.needed_bytes)}, but only "
+                f"'{config.pack.name}' needs ~{device.human_bytes(space.needed_bytes)}, but only "
                 f"~{device.human_bytes(space.free_bytes)} is available on the device even once "
                 "its IMPORT folder is cleared - this configuration won't fit.",
                 severity="warning",
@@ -526,7 +534,7 @@ class ConfigList(ListView, VimGoToTopAndBottom):
             )
 
         self.app.push_screen(
-            ConfirmSendModal(config.name, len(config.assignments), warnings), handle_result
+            ConfirmSendModal(config.pack.name, len(config.assignments), warnings), handle_result
         )
 
     async def _send(self, config: Configuration, mount: Path) -> None:
@@ -582,7 +590,7 @@ class ConfigList(ListView, VimGoToTopAndBottom):
         if self.index is None or not self.entries:
             return
         _, config = self.entries[self.index]
-        if not config.holding:
+        if not config.pack.holding:
             self.app.notify("Nothing held to export.", severity="warning")
             return
 

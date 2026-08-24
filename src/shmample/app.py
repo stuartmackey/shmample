@@ -2,10 +2,10 @@ from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.timer import Timer
-from textual.widgets import Footer, ListView
+from textual.widgets import Footer, ListView, Tree
 
 from shmample import device, migrations, sample_store
 from shmample.widgets.assignment_grid import AssignmentGrid
@@ -35,6 +35,20 @@ DEVICE_POLL_INTERVAL = 2.0
 
 
 class ShmampleApp(App):
+    # #browse-column groups Tags/Holding (side by side, on top) with
+    # Preview (spanning the full width of both, below) into the same
+    # 2fr-wide share of the outer Horizontal that Tags and Holding used to
+    # each claim as their own 1fr column - see compose() below.
+    DEFAULT_CSS = """
+    #browse-column {
+        width: 2fr;
+        height: 1fr;
+    }
+    #tags-holding-row {
+        height: 3fr;
+    }
+    """
+
     # Global fallback bindings: Textual checks the focused widget's own
     # BINDINGS first, walking up to the App only if nothing closer claims
     # the key - so these don't clash with ConfigList/FileBrowser's own
@@ -43,11 +57,11 @@ class ShmampleApp(App):
     # pane movement.
     BINDINGS = [
         Binding("1", "focus_pane('#device')", "Device", show=False),
-        Binding("2", "focus_pane('#configurations')", "Configurations", show=False),
+        Binding("2", "focus_pane('#packs')", "Packs", show=False),
         Binding("3", "focus_pane('#files')", "Samples", show=False),
-        Binding("4", "focus_pane('#preview')", "Preview", show=False),
-        Binding("5", "focus_pane('#tags')", "Tags", show=False),
-        Binding("6", "focus_pane('#holding')", "Holding", show=False),
+        Binding("4", "focus_pane('#tags')", "Tags", show=False),
+        Binding("5", "focus_pane('#holding')", "Holding", show=False),
+        Binding("6", "focus_pane('#preview')", "Preview", show=False),
         Binding("7", "focus_pane('#assignments')", "Assignments", show=False),
         # ctrl+h is also bound as plain "backspace": most terminals send
         # the same byte (0x08, or DEL 0x7f) for both, and Textual's
@@ -70,19 +84,18 @@ class ShmampleApp(App):
     ]
 
     # The layout (see MainColumn.compose and ShmampleApp.compose) isn't a
-    # regular grid - device/configurations/files/preview stack in one
-    # column while tags/holding/assignments are each their own full-height
-    # column beside it - so there's no honest geometric "widget in that
-    # direction" to compute. Hand-coding the adjacency once here is
-    # simpler than teaching a general spatial search about this
-    # particular shape.
+    # regular grid - device/packs/files stack in one column, while tags
+    # and holding sit side by side atop preview (which spans both) in
+    # another - so there's no honest geometric "widget in that direction"
+    # to compute. Hand-coding the adjacency once here is simpler than
+    # teaching a general spatial search about this particular shape.
     PANE_ADJACENCY = {
-        "device": {"down": "configurations", "right": "tags"},
-        "configurations": {"up": "device", "down": "files", "right": "tags"},
-        "files": {"up": "configurations", "down": "preview", "right": "tags"},
-        "preview": {"up": "files", "right": "tags"},
-        "tags": {"left": "files", "right": "holding"},
-        "holding": {"left": "tags", "right": "assignments"},
+        "device": {"down": "packs", "right": "tags"},
+        "packs": {"up": "device", "down": "files", "right": "tags"},
+        "files": {"up": "packs", "right": "tags"},
+        "tags": {"left": "files", "right": "holding", "down": "preview"},
+        "holding": {"left": "tags", "right": "assignments", "down": "preview"},
+        "preview": {"up": "tags", "left": "files"},
         "assignments": {"left": "holding"},
     }
 
@@ -121,6 +134,7 @@ class ShmampleApp(App):
         self.db_path = db_path
         self.theme = THEME
         self.device_state: device.DeviceState | None = None
+        self._preview_timer: Timer | None = None
         self._holding_preview_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
@@ -132,12 +146,21 @@ class ShmampleApp(App):
                 self.db_path,
                 id="main-column",
             )
-            tags = TagBrowser(self.db_path, id="tags")
-            tags.border_title = "[5] Tags"
-            yield tags
-            holding = HoldingArea(self.configurations_dir, id="holding")
-            holding.border_title = "[6] Holding"
-            yield holding
+            # Tags and Holding side by side on top, Preview spanning the
+            # full width of both underneath - grouped in their own column
+            # so Preview doesn't have to squeeze under Samples in the
+            # first column any more (see MainColumn's docstring).
+            with Vertical(id="browse-column"):
+                with Horizontal(id="tags-holding-row"):
+                    tags = TagBrowser(self.db_path, id="tags")
+                    tags.border_title = "[4] Tags"
+                    yield tags
+                    holding = HoldingArea(self.configurations_dir, id="holding")
+                    holding.border_title = "[5] Holding"
+                    yield holding
+                preview = PreviewInfo(self.db_path, id="preview")
+                preview.border_title = "[6] Preview"
+                yield preview
             assignments = AssignmentGrid(self.configurations_dir, id="assignments")
             assignments.border_title = "[7] Assignments"
             # Parked, not deleted - we're trying a "Collect" layout
@@ -167,7 +190,7 @@ class ShmampleApp(App):
         # this device_state was known - refresh it once now so its
         # per-configuration size colouring reflects the real device from
         # the start, not just from the next poll tick onwards.
-        self.query_one("#configurations", ConfigList).refresh_list()
+        self.query_one("#packs", ConfigList).refresh_list()
         self.set_interval(DEVICE_POLL_INTERVAL, self._poll_device)
 
     async def _poll_device(self) -> None:
@@ -178,7 +201,7 @@ class ShmampleApp(App):
             # Same reasoning as on_mount above - a connect/disconnect or
             # mode change can flip whether a configuration would fit, so
             # the list's size colouring needs to follow it live.
-            self.query_one("#configurations", ConfigList).refresh_list()
+            self.query_one("#packs", ConfigList).refresh_list()
 
     def on_config_list_opened(self, message: ConfigList.Opened) -> None:
         entry = (message.path, message.configuration)
@@ -186,10 +209,44 @@ class ShmampleApp(App):
         self.query_one("#holding", HoldingArea).load(entry)
 
     def on_assignment_grid_saved(self, message: AssignmentGrid.Saved) -> None:
-        self.query_one("#configurations", ConfigList).refresh_list()
+        self.query_one("#packs", ConfigList).refresh_list()
 
     def on_holding_area_saved(self, message: HoldingArea.Saved) -> None:
-        self.query_one("#configurations", ConfigList).refresh_list()
+        self.query_one("#packs", ConfigList).refresh_list()
+
+    # FileBrowser/PreviewInfo cross-talk - used to be handled inside
+    # MainColumn (see its docstring), back when Preview was one of its
+    # descendants. Now that it's in its own column instead, only the App
+    # sits above both, so this is where they have to meet. Tree.NodeHighlighted
+    # also fires for DirectoryPickerModal's folder-only tree, hence the id
+    # check - that one isn't wired to the preview pane.
+    def on_tree_node_highlighted(self, message: Tree.NodeHighlighted) -> None:
+        if message.control.id != "files":
+            return
+        if self._preview_timer is not None:
+            self._preview_timer.stop()
+            self._preview_timer = None
+
+        node = message.node
+        preview = self.query_one("#preview", PreviewInfo)
+        if node.data is not None and not node.allow_expand:
+            path = node.data.path
+
+            def show_debounced() -> None:
+                # Same NoMatches tolerance as on_list_view_highlighted
+                # below, and for the same reason - the debounce delay is
+                # real wall-clock time, so a highlight right at app
+                # shutdown can still be pending once PreviewInfo's own
+                # children are already torn down.
+                try:
+                    preview.show(path)
+                except NoMatches:
+                    pass
+
+            self._preview_timer = self.set_timer(PREVIEW_DEBOUNCE_SECONDS, show_debounced)
+        else:
+            # Cheap (just clears the pane) - no need to debounce this side.
+            preview.show(None)
 
     # TagBrowser/FileBrowser cross-talk - used to be handled inside
     # MainColumn (see its docstring), back when TagBrowser was one of its
@@ -197,6 +254,15 @@ class ShmampleApp(App):
     # sits above both, so this is where they have to meet.
     def on_file_browser_tagged(self, message: FileBrowser.Tagged) -> None:
         self.query_one("#tags", TagBrowser).refresh_list()
+        # Re-show whatever's currently highlighted so a just-tagged file's
+        # new tags show up in the preview pane immediately, rather than
+        # only on the next time it's highlighted.
+        node = self.query_one("#files", FileBrowser).cursor_node
+        preview = self.query_one("#preview", PreviewInfo)
+        if node is not None and node.data is not None and not node.allow_expand:
+            preview.show(node.data.path)
+        else:
+            preview.show(None)
 
     def on_file_browser_root_focus_changed(self, message: FileBrowser.RootFocusChanged) -> None:
         browser = self.query_one("#files", FileBrowser)
@@ -207,11 +273,12 @@ class ShmampleApp(App):
         self.query_one("#files", FileBrowser).set_tag_filter(tags.selected_tags)
 
     # HoldingArea/PreviewInfo cross-talk - same reasoning as the
-    # TagBrowser/FileBrowser handlers above: PreviewInfo lives inside
-    # MainColumn, HoldingArea is a sibling column, so only the App sits
-    # above both. ListView.Highlighted also fires for ConfigList (the
-    # other ListView in the tree), hence the id check - it isn't wired to
-    # the preview pane.
+    # TagBrowser/FileBrowser handlers above: HoldingArea and PreviewInfo
+    # aren't direct siblings (Holding sits in #tags-holding-row, Preview
+    # one level up in #browse-column), so only the App sits above both.
+    # ListView.Highlighted also fires for ConfigList (the other ListView
+    # in the tree), hence the id check - it isn't wired to the preview
+    # pane.
     def on_list_view_highlighted(self, message: ListView.Highlighted) -> None:
         if message.list_view.id != "holding":
             return

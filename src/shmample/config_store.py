@@ -9,20 +9,31 @@ DEFAULT_CONFIGURATIONS_DIR = Path.home() / ".config" / "shmample" / "configurati
 
 
 @dataclass
-class Configuration:
+class Pack:
+    """The device-agnostic half of a saved configuration: the named group
+    of samples a user has collected, before any of it is placed onto a
+    specific device's layout. Split out from `Configuration` (see
+    03-handling-multiple-devices.md) so a later task can give a pack a
+    one-to-many relationship with per-device configurations without
+    reshaping this part again."""
+
     name: str
     description: str
     created_at: datetime
     modified_at: datetime
+    # Ordered, device-agnostic staging list of sample filepaths "in" this
+    # pack but not yet (or not ever) tied to a specific device's bank/pad
+    # layout - the first step towards decoupling a configuration from any
+    # one device's shape. Unique by path - re-adding an already-held
+    # sample is a no-op (see HoldingArea.add_samples), not a second entry.
+    holding: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Configuration:
+    pack: Pack
     # (bank, pad) -> original sample filepath, per 02-implementation-plan.md
     assignments: dict[tuple[str, str], str] = field(default_factory=dict)
-    # Ordered, device-agnostic staging list of sample filepaths "in" this
-    # configuration but not yet (or not ever) tied to a specific device's
-    # bank/pad layout - the first step towards decoupling a configuration
-    # from any one device's shape. Unique by path - re-adding an already-
-    # held sample is a no-op (see HoldingArea.add_samples), not a second
-    # entry.
-    holding: list[str] = field(default_factory=list)
 
 
 def _slugify(name: str) -> str:
@@ -32,31 +43,34 @@ def _slugify(name: str) -> str:
 
 def _to_json(config: Configuration) -> dict:
     return {
-        "name": config.name,
-        "description": config.description,
-        "created_at": config.created_at.isoformat(),
-        "modified_at": config.modified_at.isoformat(),
+        "name": config.pack.name,
+        "description": config.pack.description,
+        "created_at": config.pack.created_at.isoformat(),
+        "modified_at": config.pack.modified_at.isoformat(),
         "assignments": [
             {"bank": bank, "pad": pad, "sample_path": sample_path}
             for (bank, pad), sample_path in config.assignments.items()
         ],
-        "holding": list(config.holding),
+        "holding": list(config.pack.holding),
     }
 
 
 def _from_json(data: dict) -> Configuration:
-    return Configuration(
+    pack = Pack(
         name=data["name"],
         description=data.get("description", ""),
         created_at=datetime.fromisoformat(data["created_at"]),
         modified_at=datetime.fromisoformat(data["modified_at"]),
+        # .get(..., []) - configurations saved before "holding" existed
+        # have no such key at all, not an empty one.
+        holding=list(data.get("holding", [])),
+    )
+    return Configuration(
+        pack=pack,
         assignments={
             (entry["bank"], entry["pad"]): entry["sample_path"]
             for entry in data.get("assignments", [])
         },
-        # .get(..., []) - configurations saved before "holding" existed
-        # have no such key at all, not an empty one.
-        holding=list(data.get("holding", [])),
     )
 
 
@@ -90,7 +104,7 @@ def save_configuration(
     derives a filename from its name, disambiguating on collision."""
     directory.mkdir(parents=True, exist_ok=True)
     if path is None:
-        slug = _slugify(config.name)
+        slug = _slugify(config.pack.name)
         path = directory / f"{slug}.json"
         counter = 2
         while path.exists():
@@ -136,11 +150,11 @@ def export_holding(configuration: Configuration, root: Path) -> ExportResult:
     with a numeric suffix, the same scheme save_configuration uses for a
     configuration's own filename - never silently overwritten.
     """
-    target = root / _slugify(configuration.name)
+    target = root / _slugify(configuration.pack.name)
     target.mkdir(parents=True, exist_ok=True)
     exported = 0
     missing: list[str] = []
-    for sample_path in configuration.holding:
+    for sample_path in configuration.pack.holding:
         source = Path(sample_path)
         if not source.is_file():
             missing.append(sample_path)

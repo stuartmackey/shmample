@@ -5,7 +5,7 @@ import pytest
 from rich.style import Style
 
 from shmample.app import ShmampleApp
-from shmample.config_store import Configuration, save_configuration
+from shmample.config_store import Configuration, Pack, save_configuration
 from shmample.settings import load_settings
 from shmample.widgets.assignment_grid import AssignmentGrid
 from shmample.widgets.config_list import ConfigList
@@ -14,6 +14,7 @@ from shmample.widgets.file_browser import FileBrowser
 from shmample.widgets.holding_area import HoldingArea
 from shmample.widgets.main_column import MainColumn
 from shmample.widgets.preview_info import PreviewInfo
+from shmample.widgets.tag_browser import TagBrowser
 
 
 @pytest.fixture
@@ -91,7 +92,7 @@ async def test_refocusing_the_browser_keeps_an_already_moved_cursor(tmp_path):
     app = ShmampleApp(samples_directories=[first, second])
     async with app.run_test() as pilot:
         browser = app.query_one("#files", FileBrowser)
-        configs = app.query_one("#configurations")
+        configs = app.query_one("#packs")
 
         browser.focus()
         await pilot.pause()
@@ -533,26 +534,35 @@ async def test_column_takes_a_third_of_the_width_and_full_height(samples_dir):
         assert 39 <= column.outer_size.width <= 40
 
 
-async def test_panes_split_the_column_height_one_three_one(samples_dir):
+async def test_packs_and_samples_split_the_first_column_one_three(samples_dir):
     app = ShmampleApp(samples_directories=[samples_dir])
     async with app.run_test(size=(120, 40)):
         device_panel = app.query_one(DevicePanel)
         configs = app.query_one(ConfigList)
         browser = app.query_one("#files", FileBrowser)
-        preview = app.query_one(PreviewInfo)
-        heights = (
-            device_panel.outer_size.height
-            + configs.outer_size.height
-            + browser.outer_size.height
-            + preview.outer_size.height
-        )
+        heights = device_panel.outer_size.height + configs.outer_size.height + browser.outer_size.height
         assert heights == 39  # 40 minus the docked Footer's one row
-        # DevicePanel is fixed-height (3, not a share) - the remaining
-        # 1:3:1 split happens over whatever's left afterwards.
-        assert device_panel.outer_size.height == 3
-        assert configs.outer_size.height == 7
-        assert browser.outer_size.height == 21
-        assert preview.outer_size.height == 8
+        # DevicePanel is parked (display=False, see main_column.py) for the
+        # sample-management side of 03-handling-multiple-devices.md, so it
+        # takes no space at all - the 1:3 split happens over the full
+        # remainder instead of what's left after its old fixed-height 3.
+        assert device_panel.outer_size.height == 0
+        assert configs.outer_size.height == 9
+        assert browser.outer_size.height == 30
+
+
+async def test_preview_spans_the_width_of_tags_and_holding_below_them(samples_dir):
+    app = ShmampleApp(samples_directories=[samples_dir])
+    async with app.run_test(size=(120, 40)):
+        tags = app.query_one(TagBrowser)
+        holding = app.query_one(HoldingArea)
+        preview = app.query_one(PreviewInfo)
+        # Tags/Holding share #tags-holding-row evenly, with Preview
+        # spanning their combined width underneath - see app.py's compose.
+        assert tags.outer_size.width + holding.outer_size.width == preview.outer_size.width
+        assert tags.outer_size.height == holding.outer_size.height
+        heights = tags.outer_size.height + preview.outer_size.height
+        assert heights == 39  # 40 minus the docked Footer's one row
 
 
 def _activate_configuration(app: ShmampleApp, name: str = "Kit") -> tuple[Path, Configuration]:
@@ -563,7 +573,7 @@ def _activate_configuration(app: ShmampleApp, name: str = "Kit") -> tuple[Path, 
     set one up keeps that same invariant rather than giving each pane its
     own independent copy."""
     now = datetime(2026, 1, 1)
-    config = Configuration(name=name, description="", created_at=now, modified_at=now)
+    config = Configuration(pack=Pack(name=name, description="", created_at=now, modified_at=now))
     holding = app.query_one("#holding", HoldingArea)
     path = save_configuration(config, holding.configurations_dir)
     entry = (path, config)
@@ -586,7 +596,7 @@ async def test_a_adds_the_cursor_sample_to_the_holding_area(samples_dir):
         await pilot.press("a")
         await pilot.pause()
 
-        assert holding.configuration.holding == [str(samples_dir / "kick.wav")]
+        assert holding.configuration.pack.holding == [str(samples_dir / "kick.wav")]
 
 
 async def test_a_without_an_active_configuration_notifies_and_adds_nothing(samples_dir):
@@ -624,7 +634,7 @@ async def test_a_on_an_already_held_sample_notifies_without_duplicating(samples_
         await pilot.press("a")
         await pilot.pause()
 
-        assert holding.configuration.holding == [str(samples_dir / "kick.wav")]
+        assert holding.configuration.pack.holding == [str(samples_dir / "kick.wav")]
         assert len(notifications) == 2
         assert "already" in notifications[1]
 
@@ -652,7 +662,7 @@ async def test_a_with_a_multi_selection_adds_to_holding_in_selection_order(many_
         await pilot.press("a")
         await pilot.pause()
 
-        assert holding.configuration.holding == [
+        assert holding.configuration.pack.holding == [
             str(many_samples_dir / "sample1.wav"),
             str(many_samples_dir / "sample0.wav"),
         ]
@@ -700,4 +710,4 @@ async def test_a_with_an_active_selection_ignores_the_cursor_file(many_samples_d
         await pilot.press("a")
         await pilot.pause()
 
-        assert holding.configuration.holding == [str(many_samples_dir / "sample0.wav")]
+        assert holding.configuration.pack.holding == [str(many_samples_dir / "sample0.wav")]

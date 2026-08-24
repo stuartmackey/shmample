@@ -8,7 +8,7 @@ from datetime import datetime
 
 from shmample import sample_store
 from shmample.app import ShmampleApp
-from shmample.config_store import Configuration, save_configuration
+from shmample.config_store import Configuration, Pack, save_configuration
 from shmample.device import human_bytes
 from shmample.tag_store import auto_assign_tag
 from shmample.widgets import preview_info as preview_info_module
@@ -70,7 +70,7 @@ async def test_highlighting_a_file_shows_its_name_date_duration_and_size(samples
         kick_node = _node(root_node, "kick.wav")
         browser.focus()
         browser.move_cursor(kick_node)
-        await pilot.pause(0.2)  # past PREVIEW_DEBOUNCE_SECONDS, see main_column.py
+        await pilot.pause(0.3)  # past PREVIEW_DEBOUNCE_SECONDS, see main_column.py
         text = _status_text(preview)
         assert "kick.wav" in text
         assert "0.50s" in text  # fixture is 4000 frames @ 8000Hz = 0.5s exactly
@@ -89,7 +89,7 @@ async def test_highlighting_a_file_shows_its_wav_format(samples_dir):
         kick_node = _node(root_node, "kick.wav")
         browser.focus()
         browser.move_cursor(kick_node)
-        await pilot.pause(0.2)  # past PREVIEW_DEBOUNCE_SECONDS, see main_column.py
+        await pilot.pause(0.3)  # past PREVIEW_DEBOUNCE_SECONDS, see main_column.py
         # fixture is 8000Hz, 16-bit, mono
         assert _format_text(preview) == "8kHz  16-bit  Mono"
 
@@ -122,7 +122,13 @@ async def test_highlighting_a_folder_clears_the_pane(samples_dir):
 def _activate_configuration(app: ShmampleApp, holding_paths: list[str] = ()):
     now = datetime(2026, 1, 1)
     config = Configuration(
-        name="Kit", description="", created_at=now, modified_at=now, holding=list(holding_paths)
+        pack=Pack(
+            name="Kit",
+            description="",
+            created_at=now,
+            modified_at=now,
+            holding=list(holding_paths),
+        )
     )
     holding = app.query_one("#holding", HoldingArea)
     path = save_configuration(config, holding.configurations_dir)
@@ -166,7 +172,7 @@ async def test_rapidly_scrolling_past_a_file_never_loads_its_preview(samples_dir
         browser.move_cursor(kick_node)
         await pilot.pause()  # well under PREVIEW_DEBOUNCE_SECONDS
         browser.move_cursor(drums_node)
-        await pilot.pause(0.2)  # now past it - only Drums should ever have loaded
+        await pilot.pause(0.3)  # now past it - only Drums should ever have loaded
 
         assert _status_text(preview) == ""
         assert _format_text(preview) == ""
@@ -184,7 +190,7 @@ async def test_highlighting_a_tagged_file_shows_its_tags_on_the_date_line(sample
         root_node = await _expanded_root(browser, pilot)
         browser.focus()
         browser.move_cursor(_node(root_node, "kick.wav"))
-        await pilot.pause(0.2)
+        await pilot.pause(0.3)
 
         text = _status_text(preview)
         # Appended after date/duration/size rather than getting a row of
@@ -204,7 +210,7 @@ async def test_highlighting_an_untagged_file_adds_no_trailing_content(samples_di
         root_node = await _expanded_root(browser, pilot)
         browser.focus()
         browser.move_cursor(_node(root_node, "kick.wav"))
-        await pilot.pause(0.2)
+        await pilot.pause(0.3)
 
         assert "Tags:" not in _status_text(preview)
         assert _format_text(preview) == "8kHz  16-bit  Mono"
@@ -233,11 +239,11 @@ async def test_second_highlight_of_a_file_reads_from_the_cache(samples_dir, monk
         browser.focus()
 
         browser.move_cursor(kick_node)
-        await pilot.pause(0.2)
+        await pilot.pause(0.3)
         browser.move_cursor(drums_node)
         await pilot.pause()
         browser.move_cursor(kick_node)
-        await pilot.pause(0.2)
+        await pilot.pause(0.3)
 
         assert len(calls) == 1
         assert "0.50s" in _status_text(preview)
@@ -256,7 +262,7 @@ async def test_cached_preview_persists_across_widget_instances(samples_dir, tmp_
         root_node = await _expanded_root(browser, pilot)
         browser.focus()
         browser.move_cursor(_node(root_node, "kick.wav"))
-        await pilot.pause(0.2)
+        await pilot.pause(0.3)
 
     cached = sample_store.get_cached_preview(kick_path, db_path)
     assert cached is not None
@@ -274,7 +280,7 @@ async def test_moving_between_file_and_folder_updates_pane(samples_dir):
 
         kick_node = _node(root_node, "kick.wav")
         browser.move_cursor(kick_node)
-        await pilot.pause(0.2)  # past PREVIEW_DEBOUNCE_SECONDS, see main_column.py
+        await pilot.pause(0.3)  # past PREVIEW_DEBOUNCE_SECONDS, see main_column.py
         assert "kick.wav" in _status_text(preview)
 
         drums_node = _node(root_node, "Drums")

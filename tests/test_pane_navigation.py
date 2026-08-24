@@ -20,9 +20,6 @@ async def test_ctrl_hjkl_walks_the_full_pane_layout():
         await pilot.press("ctrl+j")
         assert isinstance(app.focused, FileBrowser)
 
-        await pilot.press("ctrl+j")
-        assert isinstance(app.focused, PreviewInfo)
-
         await pilot.press("ctrl+l")
         assert isinstance(app.focused, TagBrowser)
 
@@ -36,6 +33,12 @@ async def test_ctrl_hjkl_walks_the_full_pane_layout():
         assert isinstance(app.focused, HoldingArea)
 
         await pilot.press("ctrl+h")
+        assert isinstance(app.focused, TagBrowser)
+
+        await pilot.press("ctrl+j")
+        assert isinstance(app.focused, PreviewInfo)
+
+        await pilot.press("ctrl+k")
         assert isinstance(app.focused, TagBrowser)
 
         await pilot.press("ctrl+h")

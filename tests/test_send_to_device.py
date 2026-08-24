@@ -52,7 +52,7 @@ async def test_end_to_end_create_assign_and_send(samples_dir, tmp_path, monkeypa
 
     app = ShmampleApp(samples_directories=[samples_dir], configurations_dir=tmp_path / "configs")
     async with app.run_test() as pilot:
-        configs = app.query_one("#configurations", ConfigList)
+        configs = app.query_one("#packs", ConfigList)
         configs.focus()
         await pilot.pause()
         await pilot.press("n")

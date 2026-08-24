@@ -10,7 +10,7 @@ from textual.widgets import Input, Static
 
 from shmample import device
 from shmample.app import ShmampleApp
-from shmample.config_store import Configuration, list_configurations, save_configuration
+from shmample.config_store import Configuration, Pack, list_configurations, save_configuration
 from shmample.widgets.assignment_grid import AssignmentGrid, BankPickerModal, PadPickerModal
 from shmample.widgets.config_list import ConfigList
 from shmample.widgets.preview_info import PreviewInfo
@@ -53,7 +53,7 @@ def _activate_configuration(grid: AssignmentGrid, name: str = "Kit") -> tuple[Pa
     can no longer be made without one active (see AssignmentGrid's
     docstring), so most tests need this before they can call assign()."""
     now = datetime(2026, 1, 1)
-    config = Configuration(name=name, description="", created_at=now, modified_at=now)
+    config = Configuration(pack=Pack(name=name, description="", created_at=now, modified_at=now))
     path = save_configuration(config, grid.configurations_dir)
     grid.load((path, config))
     return path, config
@@ -176,10 +176,7 @@ async def test_assign_to_the_same_pad_twice_last_one_wins(tmp_path):
 async def test_load_populates_cells_from_an_existing_configuration(tmp_path):
     now = datetime(2026, 1, 1)
     config = Configuration(
-        name="Kit A",
-        description="",
-        created_at=now,
-        modified_at=now,
+        pack=Pack(name="Kit A", description="", created_at=now, modified_at=now),
         assignments={("A", "1"): "/samples/kick.wav", ("B", "2"): "/samples/snare.wav"},
     )
     app = AssignmentGridApp(tmp_path)
@@ -283,7 +280,7 @@ async def test_assign_autosaves_to_disk_immediately(tmp_path):
     async with app.run_test():
         grid = app.query_one(AssignmentGrid)
         path, config = _activate_configuration(grid, name="Kit A")
-        original_modified_at = config.modified_at
+        original_modified_at = config.pack.modified_at
 
         grid.assign("A", "1", Path("/samples/kick.wav"))
 
@@ -291,7 +288,7 @@ async def test_assign_autosaves_to_disk_immediately(tmp_path):
         assert len(saved) == 1  # written in place, not a second file
         assert saved[0][0] == path
         assert saved[0][1].assignments == {("A", "1"): "/samples/kick.wav"}
-        assert saved[0][1].modified_at > original_modified_at
+        assert saved[0][1].pack.modified_at > original_modified_at
 
 
 async def test_clear_autosaves_to_disk_immediately(tmp_path):
@@ -491,18 +488,12 @@ async def test_start_assign_single_then_escape_at_pad_step_assigns_nothing(tmp_p
 
 async def test_opening_a_configuration_loads_it_into_the_assignment_grid(tmp_path):
     now = datetime(2026, 1, 1)
-    config = Configuration(
-        name="Kit A",
-        description="",
-        created_at=now,
-        modified_at=now,
-        assignments={("A", "1"): "/samples/kick.wav"},
-    )
+    config = Configuration(pack=Pack(name="Kit A", description="", created_at=now, modified_at=now), assignments={("A", "1"): "/samples/kick.wav"})
     save_configuration(config, tmp_path)
 
     app = ShmampleApp(samples_directories=[], configurations_dir=tmp_path)
     async with app.run_test() as pilot:
-        configs = app.query_one("#configurations", ConfigList)
+        configs = app.query_one("#packs", ConfigList)
         grid = app.query_one("#assignments", AssignmentGrid)
         configs.focus()
         await pilot.pause()
@@ -510,7 +501,7 @@ async def test_opening_a_configuration_loads_it_into_the_assignment_grid(tmp_pat
         await pilot.pause()
 
         assert _cell_name(grid, "A", "1") == "kick.wav"
-        assert grid.configuration.name == "Kit A"
+        assert grid.configuration.pack.name == "Kit A"
 
 
 async def test_creating_a_configuration_activates_it_in_the_assignment_grid(tmp_path):
@@ -519,7 +510,7 @@ async def test_creating_a_configuration_activates_it_in_the_assignment_grid(tmp_
     # assign anything to it without a separate Enter afterwards.
     app = ShmampleApp(samples_directories=[], configurations_dir=tmp_path)
     async with app.run_test() as pilot:
-        configs = app.query_one("#configurations", ConfigList)
+        configs = app.query_one("#packs", ConfigList)
         grid = app.query_one("#assignments", AssignmentGrid)
         assert grid.configuration is None
 
@@ -532,7 +523,7 @@ async def test_creating_a_configuration_activates_it_in_the_assignment_grid(tmp_
         await pilot.pause()
 
         assert grid.configuration is not None
-        assert grid.configuration.name == "Brand New Kit"
+        assert grid.configuration.pack.name == "Brand New Kit"
         assert grid.configuration_path is not None
 
         grid.assign("A", "1", Path("/samples/kick.wav"))
@@ -543,7 +534,7 @@ async def test_autosaving_refreshes_the_configuration_list(tmp_path):
     app = ShmampleApp(samples_directories=[], configurations_dir=tmp_path)
     async with app.run_test() as pilot:
         grid = app.query_one("#assignments", AssignmentGrid)
-        configs = app.query_one("#configurations", ConfigList)
+        configs = app.query_one("#packs", ConfigList)
         # Saved directly to disk, bypassing ConfigList's own "n" - the
         # list hasn't picked it up yet, which is exactly what this test
         # is checking gets fixed by the assign below.
@@ -553,4 +544,4 @@ async def test_autosaving_refreshes_the_configuration_list(tmp_path):
         grid.assign("A", "1", Path("/samples/kick.wav"))
         await pilot.pause()
 
-        assert [c.name for _, c in configs.entries] == ["New Kit"]
+        assert [c.pack.name for _, c in configs.entries] == ["New Kit"]

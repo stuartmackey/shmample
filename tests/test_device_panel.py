@@ -241,7 +241,7 @@ async def test_footer_shows_unmount_binding_only_when_device_pane_focused(tmp_pa
         keys = {key.key for key in footer.query(FooterKey)}
         assert "u" in keys
 
-        app.query_one("#configurations").focus()
+        app.query_one("#packs").focus()
         await pilot.pause()
         keys = {key.key for key in footer.query(FooterKey)}
         assert "u" not in keys

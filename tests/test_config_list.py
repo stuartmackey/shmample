@@ -8,7 +8,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Input, Label, Static, TextArea
 
 from shmample import device
-from shmample.config_store import Configuration, list_configurations, save_configuration
+from shmample.config_store import Configuration, Pack, list_configurations, save_configuration
 from shmample.device import DeviceState
 from shmample.widgets.config_list import ConfigList
 
@@ -53,12 +53,14 @@ def _save(directory, name, description="", assignments=None, holding=None):
     now = datetime(2026, 1, 1)
     save_configuration(
         Configuration(
-            name=name,
-            description=description,
-            created_at=now,
-            modified_at=now,
+            pack=Pack(
+                name=name,
+                description=description,
+                created_at=now,
+                modified_at=now,
+                holding=holding or [],
+            ),
             assignments=assignments or {},
-            holding=holding or [],
         ),
         directory,
     )
@@ -77,7 +79,7 @@ async def test_lists_existing_configurations_sorted_by_name(tmp_path):
     app = ConfigListApp(tmp_path)
     async with app.run_test():
         configs = app.query_one(ConfigList)
-        assert [c.name for _, c in configs.entries] == ["Alpha Kit", "Zebra Kit"]
+        assert [c.pack.name for _, c in configs.entries] == ["Alpha Kit", "Zebra Kit"]
 
 
 async def test_n_opens_modal_and_creates_configuration_on_submit(tmp_path):
@@ -96,9 +98,9 @@ async def test_n_opens_modal_and_creates_configuration_on_submit(tmp_path):
 
         saved = list_configurations(tmp_path)
         assert len(saved) == 1
-        assert saved[0][1].name == "My Kit"
-        assert saved[0][1].description == "desc"
-        assert [c.name for _, c in configs.entries] == ["My Kit"]
+        assert saved[0][1].pack.name == "My Kit"
+        assert saved[0][1].pack.description == "desc"
+        assert [c.pack.name for _, c in configs.entries] == ["My Kit"]
 
 
 async def test_n_posts_opened_so_a_new_configuration_is_immediately_active(tmp_path):
@@ -126,7 +128,7 @@ async def test_n_posts_opened_so_a_new_configuration_is_immediately_active(tmp_p
 
         assert len(opened) == 1
         path, config = opened[0]
-        assert config.name == "My Kit"
+        assert config.pack.name == "My Kit"
         assert path in [p for p, _ in list_configurations(tmp_path)]
 
 
@@ -152,20 +154,20 @@ async def test_c_then_confirm_duplicates_the_highlighted_configuration(tmp_path)
         configs = app.query_one(ConfigList)
         configs.focus()
         await pilot.pause()
-        assert configs.highlighted_configuration.name == "Kit A"
+        assert configs.highlighted_configuration.pack.name == "Kit A"
 
         await pilot.press("c")
         await pilot.pause()
         await pilot.press("enter")  # "Clone '...'" is the first, highlighted option
         await pilot.pause()
 
-        saved = {c.name: c for _, c in list_configurations(tmp_path)}
+        saved = {c.pack.name: c for _, c in list_configurations(tmp_path)}
         assert set(saved) == {"Kit A", "Copy of Kit A"}
         clone = saved["Copy of Kit A"]
-        assert clone.description == "desc"
+        assert clone.pack.description == "desc"
         assert clone.assignments == {("A", "1"): "/samples/kick.wav"}
         # Left untouched - the clone is a new file, not a rename in place.
-        assert saved["Kit A"].name == "Kit A"
+        assert saved["Kit A"].pack.name == "Kit A"
 
 
 async def test_c_then_confirm_gives_the_clone_a_fresh_created_at(tmp_path):
@@ -181,9 +183,9 @@ async def test_c_then_confirm_gives_the_clone_a_fresh_created_at(tmp_path):
         await pilot.press("enter")
         await pilot.pause()
 
-        clone = next(c for _, c in list_configurations(tmp_path) if c.name == "Copy of Kit A")
-        assert clone.created_at > datetime(2026, 1, 1)
-        assert clone.modified_at > datetime(2026, 1, 1)
+        clone = next(c for _, c in list_configurations(tmp_path) if c.pack.name == "Copy of Kit A")
+        assert clone.pack.created_at > datetime(2026, 1, 1)
+        assert clone.pack.modified_at > datetime(2026, 1, 1)
 
 
 async def test_c_then_cancel_clones_nothing(tmp_path):
@@ -199,7 +201,7 @@ async def test_c_then_cancel_clones_nothing(tmp_path):
         await pilot.press("escape")
         await pilot.pause()
 
-        assert [c.name for _, c in list_configurations(tmp_path)] == ["Kit A"]
+        assert [c.pack.name for _, c in list_configurations(tmp_path)] == ["Kit A"]
 
 
 async def test_c_navigate_to_cancel_option_clones_nothing(tmp_path):
@@ -216,7 +218,7 @@ async def test_c_navigate_to_cancel_option_clones_nothing(tmp_path):
         await pilot.press("enter")
         await pilot.pause()
 
-        assert [c.name for _, c in list_configurations(tmp_path)] == ["Kit A"]
+        assert [c.pack.name for _, c in list_configurations(tmp_path)] == ["Kit A"]
 
 
 async def test_c_detail_text_switches_with_highlighted_option(tmp_path):
@@ -261,16 +263,16 @@ async def test_d_then_confirm_deletes_the_selected_configuration(tmp_path):
         configs = app.query_one(ConfigList)
         configs.focus()
         await pilot.pause()
-        assert configs.highlighted_configuration.name == "Kit A"
+        assert configs.highlighted_configuration.pack.name == "Kit A"
 
         await pilot.press("d")
         await pilot.pause()
         await pilot.press("enter")  # "Delete '...'" is the first, highlighted option
         await pilot.pause()
 
-        remaining = [c.name for _, c in list_configurations(tmp_path)]
+        remaining = [c.pack.name for _, c in list_configurations(tmp_path)]
         assert remaining == ["Kit B"]
-        assert [c.name for _, c in configs.entries] == ["Kit B"]
+        assert [c.pack.name for _, c in configs.entries] == ["Kit B"]
 
 
 async def test_d_then_cancel_deletes_nothing(tmp_path):
@@ -346,7 +348,7 @@ async def test_enter_records_last_opened(tmp_path):
         assert configs.last_opened is None
         await pilot.press("enter")
         await pilot.pause()
-        assert configs.last_opened.name == "Kit A"
+        assert configs.last_opened.pack.name == "Kit A"
 
 
 async def test_vim_keys_navigate(tmp_path):
@@ -357,11 +359,11 @@ async def test_vim_keys_navigate(tmp_path):
         configs = app.query_one(ConfigList)
         configs.focus()
         await pilot.pause()
-        assert configs.highlighted_configuration.name == "Kit A"
+        assert configs.highlighted_configuration.pack.name == "Kit A"
         await pilot.press("j")
-        assert configs.highlighted_configuration.name == "Kit B"
+        assert configs.highlighted_configuration.pack.name == "Kit B"
         await pilot.press("k")
-        assert configs.highlighted_configuration.name == "Kit A"
+        assert configs.highlighted_configuration.pack.name == "Kit A"
 
 
 async def test_gg_then_shift_g_jump_to_top_and_bottom(tmp_path):
@@ -373,16 +375,16 @@ async def test_gg_then_shift_g_jump_to_top_and_bottom(tmp_path):
         configs = app.query_one(ConfigList)
         configs.focus()
         await pilot.pause()
-        assert configs.highlighted_configuration.name == "Kit A"
+        assert configs.highlighted_configuration.pack.name == "Kit A"
 
         await pilot.press("G")
         await pilot.pause()
-        assert configs.highlighted_configuration.name == "Kit C"
+        assert configs.highlighted_configuration.pack.name == "Kit C"
 
         await pilot.press("g")
         await pilot.press("g")
         await pilot.pause()
-        assert configs.highlighted_configuration.name == "Kit A"
+        assert configs.highlighted_configuration.pack.name == "Kit A"
 
 
 async def test_a_single_g_does_nothing(tmp_path):
@@ -395,11 +397,11 @@ async def test_a_single_g_does_nothing(tmp_path):
         await pilot.pause()
         await pilot.press("j")
         await pilot.pause()
-        assert configs.highlighted_configuration.name == "Kit B"
+        assert configs.highlighted_configuration.pack.name == "Kit B"
 
         await pilot.press("g")
         await pilot.pause()
-        assert configs.highlighted_configuration.name == "Kit B"  # unmoved - not a real "gg"
+        assert configs.highlighted_configuration.pack.name == "Kit B"  # unmoved - not a real "gg"
 
 
 async def test_s_with_no_configurations_does_nothing(tmp_path):
@@ -797,7 +799,8 @@ async def test_e_with_no_configurations_does_nothing(tmp_path):
 def _configuration(tmp_path, assignments=None):
     now = datetime(2026, 1, 1)
     return Configuration(
-        name="Kit A", description="", created_at=now, modified_at=now, assignments=assignments or {}
+        pack=Pack(name="Kit A", description="", created_at=now, modified_at=now),
+        assignments=assignments or {},
     )
 
 
@@ -881,7 +884,7 @@ async def test_list_preserves_highlight_across_a_device_triggered_refresh(tmp_pa
         configs.focus()
         await pilot.pause()
         await pilot.press("j")
-        assert configs.highlighted_configuration.name == "Kit B"
+        assert configs.highlighted_configuration.pack.name == "Kit B"
 
         configs.refresh_list()
         # Two pauses, not one - the highlight restore is deferred via
@@ -890,7 +893,7 @@ async def test_list_preserves_highlight_across_a_device_triggered_refresh(tmp_pa
         await pilot.pause()
         await pilot.pause()
 
-        assert configs.highlighted_configuration.name == "Kit B"
+        assert configs.highlighted_configuration.pack.name == "Kit B"
 
 
 async def test_list_visually_highlights_the_restored_row_not_just_its_index(tmp_path):
