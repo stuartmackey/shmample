@@ -7,7 +7,7 @@ from textual.css.query import NoMatches
 from textual.timer import Timer
 from textual.widgets import Footer, ListView, Tree
 
-from shmample import device, migrations, sample_store
+from shmample import config_store, device, migrations, sample_store
 from shmample.widgets.assignment_grid import AssignmentGrid
 from shmample.widgets.config_list import ConfigList
 from shmample.widgets.device_panel import DevicePanel
@@ -152,7 +152,7 @@ class ShmampleApp(App):
             # first column any more (see MainColumn's docstring).
             with Vertical(id="browse-column"):
                 with Horizontal(id="tags-holding-row"):
-                    tags = TagBrowser(self.db_path, id="tags")
+                    tags = TagBrowser(self.db_path, self.settings_path, id="tags")
                     tags.border_title = "[4] Tags"
                     yield tags
                     holding = HoldingArea(self.configurations_dir, id="holding")
@@ -267,6 +267,30 @@ class ShmampleApp(App):
     def on_file_browser_root_focus_changed(self, message: FileBrowser.RootFocusChanged) -> None:
         browser = self.query_one("#files", FileBrowser)
         self.query_one("#tags", TagBrowser).set_scope(browser.focused_root)
+
+    def on_file_browser_path_removed(self, message: FileBrowser.PathRemoved) -> None:
+        self.query_one("#tags", TagBrowser).refresh_list()
+        self.query_one("#packs", ConfigList).refresh_list()
+
+        # The pack currently open in Holding/Assignments (if any) may have
+        # just had entries stripped from it on disk by
+        # config_store.remove_samples_under - reload it so the in-memory
+        # copy those panes are editing doesn't go stale and overwrite that
+        # cleanup on their next save.
+        holding = self.query_one("#holding", HoldingArea)
+        if holding.configuration_path is None:
+            return
+        configurations_dir = (
+            self.configurations_dir
+            if self.configurations_dir is not None
+            else config_store.DEFAULT_CONFIGURATIONS_DIR
+        )
+        for path, config in config_store.list_configurations(configurations_dir):
+            if path == holding.configuration_path:
+                entry = (path, config)
+                holding.load(entry)
+                self.query_one("#assignments", AssignmentGrid).load(entry)
+                break
 
     def on_tag_browser_selection_changed(self, message: TagBrowser.SelectionChanged) -> None:
         tags = self.query_one("#tags", TagBrowser)

@@ -375,6 +375,18 @@ def candidate_mount_roots() -> list[Path]:
     return unique
 
 
+def _safe_is_dir(path: Path) -> bool:
+    """Like Path.is_dir(), but treats a permission error as "no" instead of
+    raising - e.g. a root-owned lost+found left behind once whatever used to
+    be mounted over it (a previously-added samples folder, an actual drive)
+    is gone, which denies traversal to a non-root user rather than reporting
+    ENOENT the way a simply-missing folder would."""
+    try:
+        return path.is_dir()
+    except PermissionError:
+        return False
+
+
 def autodetect_mount(expected_names=ALL_MODES) -> Path | None:
     """Scan common OS mount locations for the P-6.
 
@@ -385,11 +397,13 @@ def autodetect_mount(expected_names=ALL_MODES) -> Path | None:
     candidates = candidate_mount_roots()
 
     for candidate in candidates:
-        if candidate.is_dir() and candidate.name.upper() == "P-6":
+        if _safe_is_dir(candidate) and candidate.name.upper() == "P-6":
             return candidate
 
     for candidate in candidates:
-        if candidate.is_dir() and any((candidate / name).is_dir() for name in expected_names):
+        if _safe_is_dir(candidate) and any(
+            _safe_is_dir(candidate / name) for name in expected_names
+        ):
             return candidate
 
     return None

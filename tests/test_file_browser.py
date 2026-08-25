@@ -4,8 +4,9 @@ from pathlib import Path
 import pytest
 from rich.style import Style
 
+from shmample import tag_store
 from shmample.app import ShmampleApp
-from shmample.config_store import Configuration, Pack, save_configuration
+from shmample.config_store import Configuration, Pack, list_configurations, save_configuration
 from shmample.settings import load_settings
 from shmample.widgets.assignment_grid import AssignmentGrid
 from shmample.widgets.config_list import ConfigList
@@ -449,10 +450,106 @@ async def test_shift_d_on_a_root_removes_it_and_persists(tmp_path):
 
         await pilot.press("D")
         await pilot.pause()
+        await pilot.press("enter")  # "Remove '...'" is the first, highlighted option
+        await pilot.pause()
 
         assert _labels(browser.root.children) == [str(second)]
         assert browser.samples_directories == [second]
         assert load_settings(settings_path).samples_directories == [second]
+
+
+async def test_shift_d_asks_for_confirmation_before_removing_anything(tmp_path):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    settings_path = tmp_path / "settings.json"
+    app = ShmampleApp(samples_directories=[first, second], settings_path=settings_path)
+    async with app.run_test() as pilot:
+        screens_before = len(app.screen_stack)
+        browser = app.query_one("#files", FileBrowser)
+        browser.focus()
+        browser.move_cursor(browser.root.children[0])
+        await pilot.pause()
+
+        await pilot.press("D")
+        await pilot.pause()
+
+        assert len(app.screen_stack) == screens_before + 1
+        assert browser.samples_directories == [first, second]
+        assert not settings_path.exists()  # nothing persisted while unconfirmed
+
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert len(app.screen_stack) == screens_before
+        assert browser.samples_directories == [first, second]
+        assert _labels(browser.root.children) == [str(first), str(second)]
+
+
+async def test_shift_d_confirm_cascades_to_tags_and_packs(tmp_path):
+    removed_dir = tmp_path / "removed"
+    removed_dir.mkdir()
+    kick = removed_dir / "kick.wav"
+    snare = removed_dir / "snare.wav"
+    kick.write_bytes(b"")
+    snare.write_bytes(b"")
+
+    kept_dir = tmp_path / "kept"
+    kept_dir.mkdir()
+    tom = kept_dir / "tom.wav"
+    tom.write_bytes(b"")
+
+    db_path = tmp_path / "shmample.db"
+    tag_store.auto_assign_tag(kick, "Drums", db_path)
+    tag_store.auto_assign_tag(tom, "Drums", db_path)
+    tag_store.auto_assign_tag(kick, "OnlyKick", db_path)
+
+    configs_dir = tmp_path / "configurations"
+    now = datetime(2026, 1, 1)
+    config = Configuration(
+        pack=Pack(
+            name="Kit",
+            description="",
+            created_at=now,
+            modified_at=now,
+            holding=[str(kick), str(tom)],
+        ),
+        assignments={("A", "1"): str(snare)},
+    )
+    save_configuration(config, configs_dir)
+
+    app = ShmampleApp(
+        samples_directories=[removed_dir], db_path=db_path, configurations_dir=configs_dir
+    )
+    async with app.run_test() as pilot:
+        browser = app.query_one("#files", FileBrowser)
+        browser.focus()
+        browser.move_cursor(browser.root.children[0])
+        await pilot.pause()
+
+        await pilot.press("D")
+        await pilot.pause()
+        await pilot.press("enter")  # "Remove '...'" is the first, highlighted option
+        await pilot.pause()
+
+        assert browser.samples_directories == []
+
+        [(_, updated)] = list_configurations(configs_dir)
+        assert updated.pack.holding == [str(tom)]
+        assert updated.assignments == {}
+
+        # A tag shared with a surviving sample stays active, just with a
+        # reduced count; one that only ever applied to a now-gone sample
+        # is removed entirely rather than lingering at a permanent zero.
+        counts = dict(tag_store.tag_counts(db_path))
+        assert counts.get("Drums") == 1
+        assert "OnlyKick" not in counts
+        assert tag_store.tags_for_sample(tom, db_path) == {"Drums"}
+
+        # The pack pane's own copy reflects the same cascade.
+        packs = app.query_one("#packs", ConfigList)
+        assert packs.entries[0][1].pack.holding == [str(tom)]
 
 
 async def test_shift_d_on_a_file_or_folder_does_nothing(samples_dir, tmp_path):
@@ -509,6 +606,8 @@ async def test_shift_d_collapsing_the_expanded_root_clears_the_accordion_state(t
         browser.move_cursor(first_node)
         await pilot.pause()
         await pilot.press("D")
+        await pilot.pause()
+        await pilot.press("enter")  # "Remove '...'" is the first, highlighted option
         await pilot.pause()
 
         # Removing the previously-expanded root shouldn't leave stale

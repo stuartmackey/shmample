@@ -1,12 +1,15 @@
 import json
 from datetime import datetime
 
+from pathlib import Path
+
 from shmample.config_store import (
     Configuration,
     Pack,
     delete_configuration,
     export_holding,
     list_configurations,
+    remove_samples_under,
     save_configuration,
 )
 
@@ -57,6 +60,47 @@ def test_holding_defaults_to_empty_list_when_absent_from_saved_json(tmp_path):
 
     [(_, loaded)] = list_configurations(tmp_path)
     assert loaded.pack.holding == []
+
+
+def test_remove_samples_under_strips_only_matching_entries(tmp_path):
+    now = datetime(2026, 1, 1)
+    removed_root = tmp_path / "removed"
+    config = Configuration(
+        pack=Pack(
+            name="Kit",
+            description="",
+            created_at=now,
+            modified_at=now,
+            holding=[str(removed_root / "kick.wav"), "/kept/tom.wav"],
+        ),
+        assignments={
+            ("A", "1"): str(removed_root / "snare.wav"),
+            ("A", "2"): "/kept/clap.wav",
+        },
+    )
+    save_configuration(config, tmp_path)
+
+    updated = remove_samples_under(removed_root, tmp_path)
+
+    assert updated == 1
+    [(_, loaded)] = list_configurations(tmp_path)
+    assert loaded.pack.holding == ["/kept/tom.wav"]
+    assert loaded.assignments == {("A", "2"): "/kept/clap.wav"}
+
+
+def test_remove_samples_under_leaves_unrelated_packs_untouched(tmp_path):
+    now = datetime(2026, 1, 1)
+    untouched = Configuration(
+        pack=Pack(name="Untouched", description="", created_at=now, modified_at=now,
+                   holding=["/kept/tom.wav"]),
+    )
+    save_configuration(untouched, tmp_path)
+
+    updated = remove_samples_under(Path("/removed"), tmp_path)
+
+    assert updated == 0
+    [(_, loaded)] = list_configurations(tmp_path)
+    assert loaded.pack.holding == ["/kept/tom.wav"]
 
 
 def test_filename_derived_from_slugified_name(tmp_path):

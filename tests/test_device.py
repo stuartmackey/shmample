@@ -1,3 +1,4 @@
+import os
 import wave
 from datetime import datetime
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ from shmample.device import (
     MODE_EXPORT,
     MODE_IMPORT,
     MODE_RESTORE,
+    autodetect_mount,
     available_bytes_once_cleared,
     bank_folder,
     candidate_mount_roots,
@@ -131,6 +133,20 @@ def test_candidate_mount_roots_has_no_duplicates(monkeypatch):
     monkeypatch.setattr(platform_module, "system", lambda: "Linux")
     candidates = candidate_mount_roots()
     assert len(candidates) == len(set(candidates))
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permissions")
+def test_autodetect_mount_skips_unreadable_candidate(tmp_path, monkeypatch):
+    # Reproduces a real crash: a previously-mounted folder (e.g. a samples
+    # directory) goes away and leaves a root-owned lost+found behind, which
+    # denies traversal to a non-root user instead of just not existing.
+    unreadable = tmp_path / "lost+found"
+    unreadable.mkdir(mode=0o000)
+    try:
+        monkeypatch.setattr(device, "candidate_mount_roots", lambda: [unreadable])
+        assert autodetect_mount() is None
+    finally:
+        unreadable.chmod(0o755)
 
 
 def test_send_configuration_copies_each_assignment_to_its_pad_folder(tmp_path):

@@ -118,6 +118,31 @@ def delete_configuration(path: Path) -> None:
     path.unlink(missing_ok=True)
 
 
+def remove_samples_under(root: Path, directory: Path = DEFAULT_CONFIGURATIONS_DIR) -> int:
+    """Strips every held/assigned sample at or under `root` from every saved
+    pack in `directory` - used when a samples directory is removed (see
+    FileBrowser.action_remove_samples_directory) so a pack doesn't keep
+    pointing at paths that no longer exist. Only the affected entries are
+    dropped - the rest of a touched pack (and every other pack) is left
+    untouched. Returns the number of packs actually modified."""
+    updated = 0
+    for path, config in list_configurations(directory):
+        held = [p for p in config.pack.holding if not Path(p).is_relative_to(root)]
+        assignments = {
+            key: value
+            for key, value in config.assignments.items()
+            if not Path(value).is_relative_to(root)
+        }
+        if len(held) == len(config.pack.holding) and len(assignments) == len(config.assignments):
+            continue
+        config.pack.holding = held
+        config.assignments = assignments
+        config.pack.modified_at = datetime.now()
+        save_configuration(config, directory, path)
+        updated += 1
+    return updated
+
+
 @dataclass
 class ExportResult:
     exported: int

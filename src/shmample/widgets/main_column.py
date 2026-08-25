@@ -96,6 +96,12 @@ class MainColumn(Vertical):
         configs.border_title = "[2] Packs"
         yield configs
 
-        files = FileBrowser(self.samples_directories, self.settings_path, self.db_path, id="files")
+        files = FileBrowser(
+            self.samples_directories,
+            self.settings_path,
+            self.db_path,
+            self.configurations_dir,
+            id="files",
+        )
         files.border_title = "[3] Samples"
         yield files

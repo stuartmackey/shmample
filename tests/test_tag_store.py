@@ -7,9 +7,12 @@ from shmample.tag_store import (
     connect,
     delete_tag,
     remove_tag_from_sample,
+    remove_tags_for_unused_samples,
+    remove_tags_under,
     tag_counts,
     tags_for_sample,
     tags_for_samples,
+    unused_sample_paths,
 )
 
 
@@ -92,7 +95,80 @@ def test_removing_or_deleting_a_never_assigned_tag_does_not_raise(tmp_path):
     remove_tag_from_sample(kick, "nonexistent", db_path)
     delete_tag("nonexistent", db_path)
 
+
+def test_remove_tags_under_only_untags_matching_samples(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    removed_root = tmp_path / "removed"
+    kick = removed_root / "kick.wav"
+    kept = tmp_path / "kept" / "tom.wav"
+    auto_assign_tag(kick, "drums", db_path)
+    auto_assign_tag(kept, "drums", db_path)
+
+    remove_tags_under(removed_root, db_path)
+
     assert tags_for_sample(kick, db_path) == set()
+    assert tags_for_sample(kept, db_path) == {"drums"}
+
+
+def test_remove_tags_under_reduces_a_shared_tags_count_but_keeps_it_active(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    removed_root = tmp_path / "removed"
+    kick = removed_root / "kick.wav"
+    kept = tmp_path / "kept" / "tom.wav"
+    auto_assign_tag(kick, "drums", db_path)
+    auto_assign_tag(kept, "drums", db_path)
+
+    remove_tags_under(removed_root, db_path)
+
+    assert dict(tag_counts(db_path)).get("drums") == 1
+
+
+def test_remove_tags_under_deletes_a_tag_left_with_no_samples_anywhere(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    removed_root = tmp_path / "removed"
+    kick = removed_root / "kick.wav"
+    auto_assign_tag(kick, "only-here", db_path)
+
+    remove_tags_under(removed_root, db_path)
+
+    assert "only-here" not in dict(tag_counts(db_path))
+
+
+def test_remove_tags_under_lets_a_removed_tag_be_reused_by_a_new_sample(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    removed_root = tmp_path / "removed"
+    kick = removed_root / "kick.wav"
+    auto_assign_tag(kick, "only-here", db_path)
+
+    remove_tags_under(removed_root, db_path)
+
+    # A hard delete, not the usual soft-delete - a soft-deleted *tag* would
+    # permanently refuse to be auto-assigned to any sample ever again (see
+    # test_auto_assign_does_not_revive_a_deleted_tag), which would be
+    # wrong here: the tag isn't being intentionally retired, its only
+    # sample just left the library.
+    unrelated = tmp_path / "unrelated.wav"
+    changed = auto_assign_tag(unrelated, "only-here", db_path)
+    assert changed is True
+    assert tags_for_sample(unrelated, db_path) == {"only-here"}
+
+
+def test_remove_tags_under_lets_the_same_path_be_retagged_if_it_reappears(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    removed_root = tmp_path / "removed"
+    kick = removed_root / "kick.wav"
+    auto_assign_tag(kick, "drums", db_path)
+
+    remove_tags_under(removed_root, db_path)
+
+    # Simulates re-adding the same path later and rescanning it - a
+    # soft-deleted pairing would have permanently blocked this (same
+    # "rescan-safe" refusal as
+    # test_auto_assign_does_not_revive_a_manually_removed_pairing), but a
+    # removed path isn't the same kind of decision as a manual untag.
+    changed = auto_assign_tag(kick, "drums", db_path)
+    assert changed is True
+    assert tags_for_sample(kick, db_path) == {"drums"}
 
 
 def test_auto_assign_tag_batch_shares_a_connection_and_needs_an_explicit_commit(tmp_path):
@@ -256,3 +332,87 @@ def test_tags_for_sample_keeps_different_samples_independent(tmp_path):
 
     assert tags_for_sample(kick, db_path) == {"kick"}
     assert tags_for_sample(snare, db_path) == {"snare"}
+
+
+def test_unused_sample_paths_flags_a_file_thats_actually_gone(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    kick = tmp_path / "kick.wav"
+    kick.write_bytes(b"")
+    gone = tmp_path / "gone.wav"  # never written - simulates a since-deleted file
+    auto_assign_tag(kick, "drums", db_path)
+    auto_assign_tag(gone, "drums", db_path)
+
+    assert unused_sample_paths([tmp_path], db_path) == [gone]
+
+
+def test_unused_sample_paths_flags_a_file_thats_still_on_disk_but_untracked(tmp_path):
+    # The actual bug report this guards against: a samples directory
+    # removed before remove_tags_under existed left its tags' pairings
+    # active - and the files themselves were never touched (removing a
+    # path is non-destructive), so they're still sitting right there on
+    # disk. A disk-existence check alone finds nothing wrong; only
+    # checking against the currently tracked roots catches it.
+    db_path = tmp_path / "shmample.db"
+    untracked_dir = tmp_path / "old-drive" / "Samples"
+    kick = untracked_dir / "kick.wav"
+    kick.parent.mkdir(parents=True)
+    kick.write_bytes(b"")
+    auto_assign_tag(kick, "drums", db_path)
+
+    assert dict(tag_counts(db_path)).get("drums") == 1  # looks perfectly healthy
+    assert unused_sample_paths([], db_path) == [kick]  # nothing is tracked any more
+    assert unused_sample_paths([tmp_path / "elsewhere"], db_path) == [kick]
+
+
+def test_unused_sample_paths_keeps_a_file_thats_on_disk_and_tracked(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    tracked_dir = tmp_path / "samples"
+    kick = tracked_dir / "kick.wav"
+    kick.parent.mkdir(parents=True)
+    kick.write_bytes(b"")
+    auto_assign_tag(kick, "drums", db_path)
+
+    assert unused_sample_paths([tracked_dir], db_path) == []
+
+
+def test_remove_tags_for_unused_samples_removes_pairings_and_reports_deleted_tags(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    kept = tmp_path / "kept.wav"
+    kept.write_bytes(b"")
+    gone = tmp_path / "gone.wav"
+    auto_assign_tag(kept, "shared", db_path)
+    auto_assign_tag(gone, "shared", db_path)
+    auto_assign_tag(gone, "only-gone", db_path)
+
+    removed_tags = remove_tags_for_unused_samples([gone], db_path)
+
+    assert removed_tags == 1  # "only-gone" disappears, "shared" survives
+    assert tags_for_sample(gone, db_path) == set()
+    assert tags_for_sample(kept, db_path) == {"shared"}
+    assert "only-gone" not in dict(tag_counts(db_path))
+
+
+def test_remove_tags_for_unused_samples_lets_the_path_be_retagged_if_it_reappears(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    gone = tmp_path / "gone.wav"
+    auto_assign_tag(gone, "drums", db_path)
+
+    remove_tags_for_unused_samples([gone], db_path)
+
+    # Hard delete, not the usual soft-delete - same "rescan-safe refusal"
+    # concern as remove_tags_under: neither a missing file nor an
+    # untracked directory is an intentional opt-out, so it shouldn't
+    # permanently block a future retag once the sample is tracked again.
+    changed = auto_assign_tag(gone, "drums", db_path)
+    assert changed is True
+    assert tags_for_sample(gone, db_path) == {"drums"}
+
+
+def test_remove_tags_for_unused_samples_with_empty_list_is_a_no_op(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    kick = tmp_path / "kick.wav"
+    kick.write_bytes(b"")
+    auto_assign_tag(kick, "drums", db_path)
+
+    assert remove_tags_for_unused_samples([], db_path) == 0
+    assert tags_for_sample(kick, db_path) == {"drums"}

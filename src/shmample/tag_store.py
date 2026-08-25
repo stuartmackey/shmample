@@ -154,6 +154,142 @@ def delete_tag(tag_name: str, db_path: Path = DEFAULT_DB_PATH) -> None:
             )
 
 
+def remove_tags_under(root: Path, db_path: Path = DEFAULT_DB_PATH) -> None:
+    """Permanently deletes every (sample, tag) pairing for a sample at or
+    under `root` - used when a samples directory is removed (see
+    FileBrowser.action_remove_samples_directory), same exact-match-or-`/`-
+    bounded-prefix rule as tag_counts.
+
+    A genuine delete, not the soft-delete remove_tag_from_sample/delete_tag
+    use elsewhere: those record an explicit user opt-out that a later
+    auto-tag rescan must never silently revive (see _auto_assign_tag's own
+    "rescan-safe" reasoning), but a removed *path* isn't that kind of
+    decision - if the same sample reappears later (the folder re-added,
+    then rescanned), it should be tagged completely fresh rather than
+    carrying an invisible "don't tag this" flag left over from before it
+    left the library.
+
+    Same reasoning extends to a tag left with zero active pairings
+    anywhere as a result: it's dropped from the `tags` table entirely
+    rather than merely deactivated, since _auto_assign_tag also refuses to
+    ever revive a soft-deleted *tag* - deactivating it here would
+    permanently block that tag name from being auto-assigned to *any*
+    sample again, not just the ones that were under `root`.
+    """
+    with contextlib.closing(_connect(db_path)) as connection:
+        with connection:
+            prefix = str(root)
+            pattern = f"{_escape_like(prefix)}/%"
+            affected_tag_ids = [
+                tag_id
+                for (tag_id,) in connection.execute(
+                    """
+                    SELECT DISTINCT tag_id FROM sample_tags
+                    WHERE active = 1 AND (sample_path = ? OR sample_path LIKE ? ESCAPE '\\')
+                    """,
+                    (prefix, pattern),
+                ).fetchall()
+            ]
+            connection.execute(
+                """
+                DELETE FROM sample_tags
+                WHERE sample_path = ? OR sample_path LIKE ? ESCAPE '\\'
+                """,
+                (prefix, pattern),
+            )
+            if affected_tag_ids:
+                placeholders = ",".join("?" for _ in affected_tag_ids)
+                connection.execute(
+                    f"""
+                    DELETE FROM tags
+                    WHERE id IN ({placeholders})
+                        AND id NOT IN (SELECT tag_id FROM sample_tags WHERE active = 1)
+                    """,
+                    affected_tag_ids,
+                )
+
+
+def unused_sample_paths(
+    tracked_roots: list[Path], db_path: Path = DEFAULT_DB_PATH
+) -> list[Path]:
+    """Every distinct sample_path with an active tag pairing that no
+    longer earns its keep - either the file itself is gone from disk, or
+    it isn't under any of `tracked_roots` (today's configured samples
+    directories) any more.
+
+    Both are real, separate ways a stale tag survives: a file actually
+    deleted, versus a samples directory removed before remove_tags_under
+    existed to cascade the cleanup at the time - the file can still be
+    sitting right there on disk (an external drive, say), perfectly
+    readable, just no longer part of anything the app tracks. Checking
+    disk existence alone misses that second case entirely: the file
+    passes `is_file()` fine, so a "does it still exist" check alone finds
+    nothing to clean up even though the tag is exactly the kind of stale
+    the user is trying to clear out. A count alone can't tell either apart
+    from "still fine" either - see tag_counts.
+
+    With `tracked_roots` empty (no configured samples directories at all),
+    every active pairing counts as unused - nothing is currently tracked,
+    so nothing currently earns its keep.
+    """
+    with contextlib.closing(_connect(db_path)) as connection:
+        rows = connection.execute(
+            "SELECT DISTINCT sample_path FROM sample_tags WHERE active = 1"
+        ).fetchall()
+    unused = []
+    for (path,) in rows:
+        sample_path = Path(path)
+        tracked = any(sample_path.is_relative_to(root) for root in tracked_roots)
+        if not tracked or not sample_path.is_file():
+            unused.append(sample_path)
+    return unused
+
+
+def remove_tags_for_unused_samples(
+    sample_paths: list[Path], db_path: Path = DEFAULT_DB_PATH
+) -> int:
+    """Permanently deletes every active pairing for each of `sample_paths`
+    (expected to be exactly what unused_sample_paths just returned - not
+    re-checked here, so anything that changed between preview and confirm
+    just means stale-but-harmless input, not a race to guard against),
+    then any tag left with zero active pairings anywhere as a result. Same
+    hard-delete reasoning as remove_tags_under: neither a missing file nor
+    an untracked directory is an intentional opt-out, so nothing here
+    should block a fresh retag if the sample is ever tracked again.
+    Returns the number of tags removed, for the confirmation summary."""
+    if not sample_paths:
+        return 0
+    with contextlib.closing(_connect(db_path)) as connection:
+        with connection:
+            placeholders = ",".join("?" for _ in sample_paths)
+            params = [str(path) for path in sample_paths]
+            affected_tag_ids = [
+                tag_id
+                for (tag_id,) in connection.execute(
+                    f"""
+                    SELECT DISTINCT tag_id FROM sample_tags
+                    WHERE active = 1 AND sample_path IN ({placeholders})
+                    """,
+                    params,
+                ).fetchall()
+            ]
+            connection.execute(
+                f"DELETE FROM sample_tags WHERE sample_path IN ({placeholders})", params
+            )
+            if not affected_tag_ids:
+                return 0
+            tag_placeholders = ",".join("?" for _ in affected_tag_ids)
+            cursor = connection.execute(
+                f"""
+                DELETE FROM tags
+                WHERE id IN ({tag_placeholders})
+                    AND id NOT IN (SELECT tag_id FROM sample_tags WHERE active = 1)
+                """,
+                affected_tag_ids,
+            )
+            return cursor.rowcount
+
+
 def _escape_like(text: str) -> str:
     """Escapes sqlite LIKE's own wildcards (%, _) in a literal value that's
     about to be used as a LIKE pattern prefix - a root path containing

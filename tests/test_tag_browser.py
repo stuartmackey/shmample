@@ -3,17 +3,19 @@ from pathlib import Path
 from textual.app import App, ComposeResult
 from textual.widgets import Label
 
-from shmample.tag_store import auto_assign_tag, delete_tag
+from shmample.settings import Settings, save_settings
+from shmample.tag_store import auto_assign_tag, delete_tag, tags_for_sample
 from shmample.widgets.tag_browser import TagBrowser
 
 
 class TagBrowserApp(App):
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, settings_path: Path | None = None) -> None:
         super().__init__()
         self.db_path = db_path
+        self.settings_path = settings_path
 
     def compose(self) -> ComposeResult:
-        yield TagBrowser(self.db_path, id="tags")
+        yield TagBrowser(self.db_path, self.settings_path, id="tags")
 
 
 def _labels(tags: TagBrowser) -> list[str]:
@@ -153,6 +155,116 @@ async def test_multiple_tags_can_be_selected_at_once(tmp_path):
 
         assert tags.selected_tags == {"kick", "snare"}
         assert _rendered_styles(tags) == [TagBrowser.SELECTED_STYLE, TagBrowser.SELECTED_STYLE]
+
+
+async def test_shift_c_asks_for_confirmation_before_cleaning_anything(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    settings_path = tmp_path / "settings.json"  # never written - no tracked directories
+    gone = tmp_path / "gone.wav"  # never written - simulates a since-deleted file
+    auto_assign_tag(gone, "drums", db_path)
+
+    app = TagBrowserApp(db_path, settings_path)
+    async with app.run_test() as pilot:
+        screens_before = len(app.screen_stack)
+        tags = app.query_one(TagBrowser)
+        tags.focus()
+        await pilot.pause()
+
+        await pilot.press("C")
+        await pilot.pause()
+
+        assert len(app.screen_stack) == screens_before + 1
+        assert tags_for_sample(gone, db_path) == {"drums"}  # untouched while unconfirmed
+
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert len(app.screen_stack) == screens_before
+        assert tags_for_sample(gone, db_path) == {"drums"}
+
+
+async def test_shift_c_confirm_cleans_up_a_file_thats_actually_gone(tmp_path):
+    # One of the two ways this exists for: "drums" looks perfectly healthy
+    # at count 2 even though one of its two samples no longer exists on
+    # disk at all - counting alone can't find this, only checking the
+    # filesystem can.
+    db_path = tmp_path / "shmample.db"
+    settings_path = tmp_path / "settings.json"
+    kept = tmp_path / "kept.wav"
+    kept.write_bytes(b"")
+    gone = tmp_path / "gone.wav"
+    save_settings(Settings(samples_directories=[tmp_path]), settings_path)
+    auto_assign_tag(kept, "drums", db_path)
+    auto_assign_tag(gone, "drums", db_path)
+    auto_assign_tag(gone, "only-gone", db_path)
+
+    app = TagBrowserApp(db_path, settings_path)
+    async with app.run_test() as pilot:
+        tags = app.query_one(TagBrowser)
+        tags.focus()
+        await pilot.pause()
+        assert _labels(tags) == ["drums (2)", "only-gone (1)"]
+
+        await pilot.press("C")
+        await pilot.pause()
+        await pilot.press("enter")  # "Clean up unused tags" is the first, highlighted option
+        await pilot.pause()
+
+        assert _labels(tags) == ["drums (1)"]
+        assert tags_for_sample(kept, db_path) == {"drums"}
+        assert tags_for_sample(gone, db_path) == set()
+
+
+async def test_shift_c_confirm_cleans_up_a_file_thats_on_disk_but_no_longer_tracked(tmp_path):
+    # The actual bug report this exists for: a samples directory removed
+    # before remove_tags_under existed left "drums" looking perfectly
+    # healthy - the file was never touched (removing a path doesn't touch
+    # disk), so it's still sitting right there, just not under any
+    # currently configured samples directory any more.
+    db_path = tmp_path / "shmample.db"
+    settings_path = tmp_path / "settings.json"  # never written - nothing is tracked
+    kick = tmp_path / "old-drive" / "kick.wav"
+    kick.parent.mkdir()
+    kick.write_bytes(b"")
+    auto_assign_tag(kick, "drums", db_path)
+
+    app = TagBrowserApp(db_path, settings_path)
+    async with app.run_test() as pilot:
+        tags = app.query_one(TagBrowser)
+        tags.focus()
+        await pilot.pause()
+        assert _labels(tags) == ["drums (1)"]  # looks perfectly healthy
+
+        await pilot.press("C")
+        await pilot.pause()
+        await pilot.press("enter")  # "Clean up unused tags" is the first, highlighted option
+        await pilot.pause()
+
+        assert _labels(tags) == ["No tags yet"]
+        assert kick.is_file()  # cleaning up tags never touches files on disk
+        assert tags_for_sample(kick, db_path) == set()
+
+
+async def test_shift_c_with_nothing_unused_notifies_and_asks_nothing(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    settings_path = tmp_path / "settings.json"
+    kick = tmp_path / "kick.wav"
+    kick.write_bytes(b"")
+    save_settings(Settings(samples_directories=[tmp_path]), settings_path)
+    auto_assign_tag(kick, "drums", db_path)
+
+    app = TagBrowserApp(db_path, settings_path)
+    async with app.run_test() as pilot:
+        screens_before = len(app.screen_stack)
+        tags = app.query_one(TagBrowser)
+        tags.focus()
+        await pilot.pause()
+
+        await pilot.press("C")
+        await pilot.pause()
+
+        assert len(app.screen_stack) == screens_before  # no confirmation needed
+        assert _labels(tags) == ["drums (1)"]
 
 
 async def test_vim_keys_navigate(tmp_path):

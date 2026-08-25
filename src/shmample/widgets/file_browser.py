@@ -6,17 +6,22 @@ from pathlib import Path
 from rich.style import Style
 from rich.text import Text
 from textual import events
+from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.containers import Vertical
 from textual.message import Message
-from textual.widgets import Tree
+from textual.screen import ModalScreen
+from textual.widgets import OptionList, Static, Tree
+from textual.widgets.option_list import Option
 from textual.widgets.tree import TreeNode
 
-from shmample import auto_tag, library_scan, sample_store, tag_store
+from shmample import auto_tag, config_store, library_scan, sample_store, tag_store
 from shmample import settings as settings_module
 from shmample.audio import NoPlayerFoundError, Previewer
 from shmample.widgets.directory_picker import DirectoryPickerModal
 from shmample.widgets.holding_area import HoldingArea
 from shmample.widgets.vim_navigation import VimGoToTopAndBottom
+from shmample.widgets.vim_option_list import VimOptionList
 
 
 def _contains_wav(directory: Path) -> bool:
@@ -51,6 +56,76 @@ class Entry:
 
     path: Path
     loaded: bool = False
+
+
+class ConfirmRemovePathModal(ModalScreen[bool]):
+    """Confirmation before "D" forgets a configured samples directory - same
+    lazygit-style OptionList + detail-pane shape as ConfigList's own
+    ConfirmDeleteModal. Called out explicitly because removing a path also
+    cascades: every tag on a sample under it is removed (see
+    tag_store.remove_tags_under), and every pack referencing one of those
+    samples has just that reference stripped (see
+    config_store.remove_samples_under) - neither is obvious from "remove
+    path" alone, so the detail text says so up front rather than surprising
+    the user after the fact."""
+
+    DEFAULT_CSS = """
+    ConfirmRemovePathModal {
+        align: center middle;
+    }
+    ConfirmRemovePathModal > Vertical {
+        width: 90%;
+        max-width: 33%;
+        height: auto;
+    }
+    ConfirmRemovePathModal OptionList {
+        border: round $error;
+        height: auto;
+    }
+    ConfirmRemovePathModal #detail {
+        border: round $error;
+        height: auto;
+        margin-top: 1;
+        padding: 0 1;
+    }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, directory_name: str) -> None:
+        super().__init__()
+        self.directory_name = directory_name
+        self._details = (
+            f"Stop tracking '{self.directory_name}'. Its tags are removed, and any "
+            "pack holding or assigning one of its samples has that reference "
+            "removed too. Files on disk are untouched.",
+            "Keep tracking the path as it is.",
+        )
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            options = VimOptionList(
+                Option(f"Remove '{self.directory_name}'", id="confirm"),
+                Option("Cancel", id="cancel"),
+            )
+            options.border_title = "Remove path"
+            options.border_subtitle = f"1 of {len(self._details)}"
+            yield options
+            yield Static(self._details[0], id="detail")
+
+    def on_mount(self) -> None:
+        self.query_one(VimOptionList).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        options = event.option_list
+        options.border_subtitle = f"{event.option_index + 1} of {options.option_count}"
+        self.query_one("#detail", Static).update(self._details[event.option_index])
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(event.option_id == "confirm")
 
 
 class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
@@ -188,11 +263,19 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
         focus-popping side of "h" (see _rebuild_roots) - lets MainColumn
         re-scope the tag pane to FileBrowser's own focused_root."""
 
+    class PathRemoved(Message):
+        """Posted after "D" (confirmed) removes a configured samples
+        directory and cascades that into its samples' tags and any pack
+        referencing them (see action_remove_samples_directory) - lets the
+        App refresh the Tags/Packs panes, and reload the pack currently
+        open in Holding/Assignments if the cascade touched it."""
+
     def __init__(
         self,
         samples_directories: list[Path],
         settings_path: Path | None = None,
         db_path: Path | None = None,
+        configurations_dir: Path | None = None,
         *args,
         **kwargs,
     ) -> None:
@@ -219,6 +302,14 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
         # db_path for why this falls back to sample_store's attribute
         # rather than a locally-imported copy of it.
         self.db_path = db_path if db_path is not None else sample_store.DEFAULT_DB_PATH
+        # Needed only to cascade a removed samples directory into
+        # config_store.remove_samples_under - see
+        # action_remove_samples_directory.
+        self.configurations_dir = (
+            configurations_dir
+            if configurations_dir is not None
+            else config_store.DEFAULT_CONFIGURATIONS_DIR
+        )
         self.samples_directories = list(samples_directories)
         self.last_previewed: Path | None = None
         self.preview_error: str | None = None
@@ -694,11 +785,33 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
         node = self._cursor_on_root_path()
         if node is None:
             return
-        self.samples_directories.remove(node.data.path)
-        self._persist_samples_directories()
-        if self._expanded_root_node is node:
-            self._expanded_root_node = None
-        node.remove()
+        path = node.data.path
+
+        def handle_result(confirmed: bool) -> None:
+            if not confirmed:
+                return
+            self.samples_directories.remove(path)
+            self._persist_samples_directories()
+            if self._expanded_root_node is node:
+                self._expanded_root_node = None
+            node.remove()
+
+            # Cascade: a removed path's samples shouldn't leave their tags
+            # or their references in a saved pack dangling against paths
+            # nothing will ever browse to again (see remove_tags_under/
+            # remove_samples_under's own docstrings for exactly what each
+            # does and doesn't touch).
+            tag_store.remove_tags_under(path, self.db_path)
+            updated_packs = config_store.remove_samples_under(path, self.configurations_dir)
+
+            message = f"Removed '{path.name}'."
+            if updated_packs:
+                noun = "pack" if updated_packs == 1 else "packs"
+                message += f" Updated {updated_packs} {noun} that referenced it."
+            self.app.notify(message)
+            self.post_message(self.PathRemoved())
+
+        self.app.push_screen(ConfirmRemovePathModal(path.name), handle_result)
 
     def _persist_samples_directories(self) -> None:
         settings_module.save_settings(
