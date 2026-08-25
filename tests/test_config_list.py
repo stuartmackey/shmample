@@ -1137,6 +1137,42 @@ async def test_e_ct_shows_a_picker_when_multiple_cards_are_found(tmp_path, monke
         assert not (card_a / "Tracks").exists()
 
 
+async def test_e_ct_slot_picker_subtitle_shows_the_real_pack_number(tmp_path, monkeypatch):
+    # Pack slots run 2-32, not 1-31, so the last row's 0-based position
+    # (30) is one less than its actual pack number (32) - the picker's
+    # subtitle must show the pack number, not the generic "N of total"
+    # row-position counter every other picker in this file uses.
+    from textual.widgets import OptionList
+
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    monkeypatch.setattr(circuit_tracks, "find_ct_cards", lambda: [mount])
+
+    kick = tmp_path / "kick.wav"
+    kick.write_bytes(b"kick-data")
+    _save(tmp_path, "My Kit", holding=[str(kick)])
+
+    app = ConfigListApp(tmp_path)
+    async with app.run_test() as pilot:
+        configs = app.query_one(ConfigList)
+        configs.focus()
+        await pilot.pause()
+
+        await pilot.press("e")
+        await pilot.pause()
+        await pilot.press("down", "enter")  # "Circuit Tracks (SD card)"
+        await pilot.pause()
+
+        options = app.screen.query_one(OptionList)
+        assert options.border_subtitle == "Pack 2"  # first row, highlighted by default
+
+        for _ in range(30):  # 31 rows total (Pack 2-32) - move to the last one
+            await pilot.press("down")
+        await pilot.pause()
+
+        assert options.border_subtitle == "Pack 32"
+
+
 def _configuration(tmp_path, assignments=None):
     now = datetime(2026, 1, 1)
     return Configuration(

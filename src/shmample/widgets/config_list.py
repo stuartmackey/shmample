@@ -431,7 +431,7 @@ class CtPackSlotModal(ModalScreen[int | None]):
                 *(Option(self._label(slot), id=str(slot.index)) for slot in self._slots)
             )
             options.border_title = "Choose a Circuit Tracks pack slot"
-            options.border_subtitle = f"1 of {len(self._slots)}"
+            options.border_subtitle = f"Pack {self._slots[0].index}" if self._slots else None
             yield options
 
     @staticmethod
@@ -447,8 +447,13 @@ class CtPackSlotModal(ModalScreen[int | None]):
         self.dismiss(None)
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        # Slots start at Pack 2, not 1, so the row position (0-based)
+        # doesn't match the pack number itself - show the actual pack
+        # number rather than every other picker's generic "N of total"
+        # row-position counter, which would be off by the slot numbering's
+        # own offset.
         options = event.option_list
-        options.border_subtitle = f"{event.option_index + 1} of {options.option_count}"
+        options.border_subtitle = f"Pack {self._slots[event.option_index].index}"
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         self.dismiss(int(event.option_id))
