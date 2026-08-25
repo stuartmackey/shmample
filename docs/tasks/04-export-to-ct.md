@@ -242,3 +242,74 @@ nail down the exact sample write framing (block size, any header Components
 sends that wasn't captured, the file type `0x07` meta write), and decode
 enough of a captured block to confirm it really is raw/derived PCM audio
 before writing anything of our own to a real device.
+
+# Review notes, round 5 - direct SD write actually works end-to-end (corrects round 2/3)
+
+Round 2 and round 3 concluded direct host writes to the SD card were "not a
+usable transfer path, full stop", based on the card mounting read-only on
+every reader tried at the time. That conclusion turns out to have been
+wrong, and the write-protect issue was purely a **faulty full-size
+microSD-to-SD adapter**, not anything card- or device-level:
+
+- Bought/tried a different reader (a direct microSD reader, no full-size SD
+  adapter sleeve involved) - the same card mounted **read-write** on the
+  first try, confirmed both by the kernel (`/sys/block/sdc/ro` = `0`, not
+  `1`) and by an actual successful write.
+- With genuine write access, tried the exact experiment this doc originally
+  set out to test: hand-built a new Pack folder directly on the SD card -
+  `Tracks/11_Shmample Test/meta/00_META.ncm` (copied byte-for-byte from an
+  existing zero-Sessions pack) + `Tracks/11_Shmample Test/PCM/00_....wav`
+  (a generated 440Hz test tone, mono/16-bit/48kHz to match every other wav
+  already on the card) - using the minimal Pack shape confirmed back in
+  round 3's read-only inspection. No `Sessions/`/`Patches/` folders, no
+  SysEx involved anywhere.
+- **Novation Components recognised it immediately**: its own "Send pack to
+  Circuit Tracks" pack-picker listed "Shmample Test" as a fully-formed pack
+  in the grid, styled identically to every real pack - not flagged as
+  broken/incomplete.
+- **The CT hardware itself loaded it and played the sample perfectly** via
+  its own Packs View, on real hardware, no computer/Components involved in
+  that last step at all.
+
+**This is now proven end-to-end, by hand, with a plain filesystem write.**
+Round 2/3's "impossible" conclusion should be read as "impossible with a
+faulty adapter", not "impossible in general" - worth remembering if this
+comes up again, since it's an easy trap: a card reporting hardware
+write-protect is worth suspecting the *reader* before concluding anything
+about the card or the device's intentions.
+
+**Practical implication for this task - this changes the recommended
+implementation path substantially.** Round 4's MIDI SysEx protocol work
+(pack-index addressing, `WRITE_DATA`, the undocumented subcommands) is
+still valid, real, and worth keeping documented - but it is no longer the
+only, or the simplest, route to "send a pack to a CT". Building the CT
+export feature as a **plain filesystem write to the SD card**, mirroring
+`device.py`'s existing P-6 `send_configuration` pattern almost exactly
+(mount the card, write `Tracks/<NN>_<name>/{meta/00_META.ncm, PCM/*.wav}`,
+fsync, done), is now the proven, lowest-risk, no-new-dependency option:
+
+- No MIDI library needed at all for this path (the `mido`/`python-rtmidi`
+  dev dependency added for round 4's investigation can stay dev-only/be
+  removed if the SD-write path is what gets built).
+- Directly reuses the existing `device.py` durability pattern (explicit
+  fsync of file + directory chain up to the mount root) that
+  `send_configuration` already established for the P-6, for the same
+  removable-media reasons.
+- Sidesteps every open question from round 4 (exact sample write framing,
+  block size, the undocumented `0x07` meta write) entirely, since none of
+  that machinery is needed once a plain file write is confirmed sufficient.
+
+**Remaining open item**: this only reaches Pack slots that live on the SD
+card (device Packs 2-32). The internal-only Pack 1 (factory "Waves" kit)
+has no SD-card representation at all and can only ever be reached over
+MIDI SysEx - out of scope unless a future task specifically needs to
+target it.
+
+# Scope decision
+
+Stuart: eventually both transfer methods should be supported (direct SD
+write, and MIDI SysEx for cases the SD route can't reach - e.g. the
+internal-only Pack 1, or a future no-card-removal workflow), but **for now,
+implementation work focuses on the direct SD card path only**. The round 4
+SysEx protocol findings stay documented above as-is for when that second
+method gets picked up later, rather than being acted on now.

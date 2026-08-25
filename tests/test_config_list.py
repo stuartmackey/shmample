@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from textual.app import App, ComposeResult
 from textual.widgets import Input, Label, Static, TextArea
 
-from shmample import device
+from shmample import circuit_tracks, device
 from shmample.config_store import Configuration, Pack, list_configurations, save_configuration
 from shmample.device import DeviceState
 from shmample.widgets.config_list import ConfigList
@@ -899,6 +899,8 @@ async def test_e_exports_the_highlighted_configurations_held_samples(tmp_path, m
 
         await pilot.press("e")
         await pilot.pause()
+        await pilot.press("enter")  # "Folder" is the first, highlighted option
+        await pilot.pause()
 
         tree = app.screen.query_one("_DirsOnlyDirectoryTree")
         export_node = next(n for n in tree.root.children if "Export" in str(n.label))
@@ -964,6 +966,175 @@ async def test_e_with_no_configurations_does_nothing(tmp_path):
         await pilot.pause()
 
         assert len(app.screen_stack) == screens_before
+
+
+async def _wait_for_export_ct(app):
+    # Same reasoning as _wait_for_export above - scope to just the
+    # "export-ct" group rather than every worker in the app.
+    export_workers = [w for w in app.workers if w.group == "export-ct"]
+    if export_workers:
+        await app.workers.wait_for_complete(export_workers)
+
+
+async def test_e_ct_writes_held_samples_to_a_chosen_empty_slot(tmp_path, monkeypatch):
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    monkeypatch.setattr(circuit_tracks, "find_ct_cards", lambda: [mount])
+
+    kick = tmp_path / "kick.wav"
+    kick.write_bytes(b"kick-data")
+    _save(tmp_path, "My Kit", holding=[str(kick)])
+
+    app = ConfigListApp(tmp_path)
+    notifications = []
+    app.notify = lambda message, **kwargs: notifications.append(message)
+    async with app.run_test() as pilot:
+        configs = app.query_one(ConfigList)
+        configs.focus()
+        await pilot.pause()
+
+        await pilot.press("e")
+        await pilot.pause()
+        await pilot.press("down", "enter")  # "Circuit Tracks (SD card)" is the second option
+        await pilot.pause()  # exactly one card found - straight to the slot picker, no card picker
+
+        await pilot.press("enter")  # "Pack 2 - (empty)" is the first, highlighted slot
+        await _wait_for_export_ct(app)
+        await pilot.pause()
+
+        pack_dir = mount / "Tracks" / "00_My Kit"
+        assert (pack_dir / "meta" / "00_META.ncm").read_bytes() == b"\x00\x00"
+        assert (pack_dir / "PCM" / "00_kick.wav").read_bytes() == b"kick-data"
+        # Same as _send's own eject step - device.unmount() can't find a
+        # real block device for this fake mount, so the "couldn't safely
+        # eject automatically" fallback is expected here, not a failure.
+        assert notifications == [
+            "Sent 1 sample to Circuit Tracks pack 2 ('00_My Kit'). Couldn't safely eject "
+            "automatically - eject the card yourself before removing it."
+        ]
+
+
+async def test_e_ct_confirms_before_overwriting_an_occupied_slot(tmp_path, monkeypatch):
+    mount = tmp_path / "mount"
+    monkeypatch.setattr(circuit_tracks, "find_ct_cards", lambda: [mount])
+
+    old_pack = mount / "Tracks" / "00_Old Pack"
+    (old_pack / "PCM").mkdir(parents=True)
+    (old_pack / "PCM" / "00_old.wav").write_bytes(b"old-data")
+
+    kick = tmp_path / "kick.wav"
+    kick.write_bytes(b"kick-data")
+    _save(tmp_path, "My Kit", holding=[str(kick)])
+
+    app = ConfigListApp(tmp_path)
+    async with app.run_test() as pilot:
+        configs = app.query_one(ConfigList)
+        configs.focus()
+        await pilot.pause()
+
+        await pilot.press("e")
+        await pilot.pause()
+        await pilot.press("down", "enter")  # "Circuit Tracks (SD card)"
+        await pilot.pause()
+
+        await pilot.press("enter")  # "Pack 2 - Old Pack (will be overwritten)"
+        await pilot.pause()
+        await pilot.press("enter")  # "Overwrite pack 2" is the first, highlighted option
+        await _wait_for_export_ct(app)
+        await pilot.pause()
+
+        pack_dir = mount / "Tracks" / "00_My Kit"
+        assert not old_pack.exists()
+        assert (pack_dir / "PCM" / "00_kick.wav").read_bytes() == b"kick-data"
+
+
+async def test_e_ct_notifies_when_the_card_is_mounted_read_only(tmp_path, monkeypatch):
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    monkeypatch.setattr(circuit_tracks, "find_ct_cards", lambda: [mount])
+    monkeypatch.setattr(circuit_tracks, "is_writable", lambda m: False)
+
+    kick = tmp_path / "kick.wav"
+    kick.write_bytes(b"kick-data")
+    _save(tmp_path, "My Kit", holding=[str(kick)])
+
+    app = ConfigListApp(tmp_path)
+    notifications = []
+    app.notify = lambda message, **kwargs: notifications.append(message)
+    async with app.run_test() as pilot:
+        configs = app.query_one(ConfigList)
+        configs.focus()
+        await pilot.pause()
+
+        screens_before = len(app.screen_stack)
+        await pilot.press("e")
+        await pilot.pause()
+        await pilot.press("down", "enter")  # "Circuit Tracks (SD card)"
+        await pilot.pause()
+
+        assert len(app.screen_stack) == screens_before  # no slot picker appeared
+        assert len(notifications) == 1
+        assert "read-only" in notifications[0]
+        assert not (mount / "Tracks").exists()
+
+
+async def test_e_ct_notifies_when_no_card_is_found(tmp_path, monkeypatch):
+    monkeypatch.setattr(circuit_tracks, "find_ct_cards", lambda: [])
+
+    kick = tmp_path / "kick.wav"
+    kick.write_bytes(b"kick-data")
+    _save(tmp_path, "My Kit", holding=[str(kick)])
+
+    app = ConfigListApp(tmp_path)
+    notifications = []
+    app.notify = lambda message, **kwargs: notifications.append(message)
+    async with app.run_test() as pilot:
+        configs = app.query_one(ConfigList)
+        configs.focus()
+        await pilot.pause()
+
+        screens_before = len(app.screen_stack)
+        await pilot.press("e")
+        await pilot.pause()
+        await pilot.press("down", "enter")  # "Circuit Tracks (SD card)"
+        await pilot.pause()
+
+        assert len(app.screen_stack) == screens_before  # no slot picker appeared
+        assert notifications == [
+            "No Circuit Tracks SD card found - make sure it's mounted and try again."
+        ]
+
+
+async def test_e_ct_shows_a_picker_when_multiple_cards_are_found(tmp_path, monkeypatch):
+    card_a = tmp_path / "card-a"
+    card_a.mkdir()
+    card_b = tmp_path / "card-b"
+    card_b.mkdir()
+    monkeypatch.setattr(circuit_tracks, "find_ct_cards", lambda: [card_a, card_b])
+
+    kick = tmp_path / "kick.wav"
+    kick.write_bytes(b"kick-data")
+    _save(tmp_path, "My Kit", holding=[str(kick)])
+
+    app = ConfigListApp(tmp_path)
+    async with app.run_test() as pilot:
+        configs = app.query_one(ConfigList)
+        configs.focus()
+        await pilot.pause()
+
+        await pilot.press("e")
+        await pilot.pause()
+        await pilot.press("down", "enter")  # "Circuit Tracks (SD card)"
+        await pilot.pause()
+        await pilot.press("down", "enter")  # second listed card - card_b
+        await pilot.pause()
+
+        await pilot.press("enter")  # "Pack 2 - (empty)" is the first, highlighted slot
+        await _wait_for_export_ct(app)
+        await pilot.pause()
+
+        assert (card_b / "Tracks" / "00_My Kit" / "PCM" / "00_kick.wav").read_bytes() == b"kick-data"
+        assert not (card_a / "Tracks").exists()
 
 
 def _configuration(tmp_path, assignments=None):

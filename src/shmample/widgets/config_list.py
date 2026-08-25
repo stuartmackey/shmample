@@ -12,7 +12,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, Label, ListItem, ListView, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
-from shmample import config_store, device
+from shmample import circuit_tracks, config_store, device
 from shmample.config_store import (
     Configuration,
     Pack,
@@ -269,6 +269,236 @@ class ConfirmSendModal(ModalScreen[bool]):
                 Option("Cancel", id="cancel"),
             )
             options.border_title = "Send to device"
+            options.border_subtitle = f"1 of {len(self._details)}"
+            yield options
+            yield Static(self._details[0], id="detail")
+
+    def on_mount(self) -> None:
+        self.query_one(VimOptionList).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        options = event.option_list
+        options.border_subtitle = f"{event.option_index + 1} of {options.option_count}"
+        self.query_one("#detail", Static).update(self._details[event.option_index])
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(event.option_id == "confirm")
+
+
+class ExportTargetModal(ModalScreen[str | None]):
+    """Folder vs Circuit Tracks prompt for "e" - same OptionList + detail
+    pane shape as the other confirm modals, styled $success since picking
+    a target destroys nothing by itself (overwriting an occupied CT pack
+    slot is confirmed separately, once a specific slot is chosen)."""
+
+    DEFAULT_CSS = """
+    ExportTargetModal {
+        align: center middle;
+    }
+    ExportTargetModal > Vertical {
+        width: 90%;
+        max-width: 33%;
+        height: auto;
+    }
+    ExportTargetModal OptionList {
+        border: round $success;
+        height: auto;
+    }
+    ExportTargetModal #detail {
+        border: round $success;
+        height: auto;
+        margin-top: 1;
+        padding: 0 1;
+    }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    _details = (
+        "Copy held samples as plain files into a folder you choose.",
+        "Write held samples straight onto a Circuit Tracks SD card as a "
+        "pack, in an SD-card slot you choose.",
+    )
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            options = VimOptionList(
+                Option("Folder", id="folder"),
+                Option("Circuit Tracks (SD card)", id="ct"),
+            )
+            options.border_title = "Export to"
+            options.border_subtitle = f"1 of {len(self._details)}"
+            yield options
+            yield Static(self._details[0], id="detail")
+
+    def on_mount(self) -> None:
+        self.query_one(VimOptionList).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        options = event.option_list
+        options.border_subtitle = f"{event.option_index + 1} of {options.option_count}"
+        self.query_one("#detail", Static).update(self._details[event.option_index])
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(event.option_id)
+
+
+class CtCardPickerModal(ModalScreen[Path | None]):
+    """Picker shown only when more than one mounted volume looks like a
+    Circuit Tracks SD card (has a `Tracks` folder) - the common case of
+    exactly one found card skips this and goes straight to the pack-slot
+    picker, no folder-browsing step at all."""
+
+    DEFAULT_CSS = """
+    CtCardPickerModal {
+        align: center middle;
+    }
+    CtCardPickerModal > Vertical {
+        width: 90%;
+        max-width: 50%;
+        height: auto;
+    }
+    CtCardPickerModal OptionList {
+        border: round $success;
+        height: auto;
+    }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, cards: list[Path]) -> None:
+        super().__init__()
+        self._cards = cards
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            options = VimOptionList(
+                *(Option(str(card), id=str(i)) for i, card in enumerate(self._cards))
+            )
+            options.border_title = "Choose a Circuit Tracks SD card"
+            options.border_subtitle = f"1 of {len(self._cards)}"
+            yield options
+
+    def on_mount(self) -> None:
+        self.query_one(VimOptionList).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        options = event.option_list
+        options.border_subtitle = f"{event.option_index + 1} of {options.option_count}"
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(self._cards[int(event.option_id)])
+
+
+class CtPackSlotModal(ModalScreen[int | None]):
+    """Pack-slot picker for CT export - one row per SD-card slot (2-32),
+    existing packs flagged (name + styling) so overwriting one is a
+    visible, deliberate choice rather than a surprise."""
+
+    DEFAULT_CSS = """
+    CtPackSlotModal {
+        align: center middle;
+    }
+    CtPackSlotModal > Vertical {
+        width: 90%;
+        max-width: 40%;
+        height: 80%;
+    }
+    CtPackSlotModal OptionList {
+        border: round $success;
+        height: 1fr;
+    }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, slots: list[circuit_tracks.PackSlot]) -> None:
+        super().__init__()
+        self._slots = slots
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            options = VimOptionList(
+                *(Option(self._label(slot), id=str(slot.index)) for slot in self._slots)
+            )
+            options.border_title = "Choose a Circuit Tracks pack slot"
+            options.border_subtitle = f"1 of {len(self._slots)}"
+            yield options
+
+    @staticmethod
+    def _label(slot: circuit_tracks.PackSlot) -> Text:
+        if slot.occupied:
+            return Text(f"Pack {slot.index}  -  {slot.name}  (will be overwritten)", style="yellow")
+        return Text(f"Pack {slot.index}  -  (empty)", style="dim")
+
+    def on_mount(self) -> None:
+        self.query_one(VimOptionList).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        options = event.option_list
+        options.border_subtitle = f"{event.option_index + 1} of {options.option_count}"
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(int(event.option_id))
+
+
+class ConfirmCtOverwriteModal(ModalScreen[bool]):
+    """Confirmation before overwriting an occupied CT pack slot - styled
+    $error like ConfirmDeleteModal, since (unlike ConfirmSendModal's P-6
+    IMPORT staging) this genuinely destroys whatever pack currently
+    occupies that SD-card slot."""
+
+    DEFAULT_CSS = """
+    ConfirmCtOverwriteModal {
+        align: center middle;
+    }
+    ConfirmCtOverwriteModal > Vertical {
+        width: 90%;
+        max-width: 33%;
+        height: auto;
+    }
+    ConfirmCtOverwriteModal OptionList {
+        border: round $error;
+        height: auto;
+    }
+    ConfirmCtOverwriteModal #detail {
+        border: round $error;
+        height: auto;
+        margin-top: 1;
+        padding: 0 1;
+    }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, pack_index: int, existing_name: str) -> None:
+        super().__init__()
+        self.pack_index = pack_index
+        self._details = (
+            f"Delete '{existing_name}' from Circuit Tracks pack {pack_index} and replace it "
+            "entirely. This cannot be undone.",
+            "Don't overwrite anything.",
+        )
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            options = VimOptionList(
+                Option(f"Overwrite pack {self.pack_index}", id="confirm"),
+                Option("Cancel", id="cancel"),
+            )
+            options.border_title = "Overwrite pack"
             options.border_subtitle = f"1 of {len(self._details)}"
             yield options
             yield Static(self._details[0], id="detail")
@@ -660,13 +890,16 @@ class ConfigList(ListView, VimGoToTopAndBottom):
 
     def action_export_selected(self) -> None:
         """Copies the highlighted configuration's held samples out to a
-        chosen folder as plain files (see config_store.export_holding) -
-        the simple, device-agnostic way to get them out for use
-        elsewhere, as opposed to action_send_to_device's P-6-specific
-        bank/pad copy. No confirmation modal, unlike send/delete/clone -
-        unlike those, nothing existing is ever overwritten or destroyed
-        (export_holding disambiguates same-named collisions rather than
-        clobbering), so there's nothing here worth pausing to confirm."""
+        chosen folder, or straight onto a Circuit Tracks SD card as a
+        pack (see config_store.export_holding / circuit_tracks.
+        send_pack_to_slot) - the simple, low-dependency way to get them
+        out for use elsewhere, as opposed to action_send_to_device's
+        P-6-specific bank/pad copy. Folder export has no confirmation
+        modal, unlike send/delete/clone - nothing existing is ever
+        overwritten there (export_holding disambiguates same-named
+        collisions rather than clobbering). CT export does confirm, but
+        only once a chosen pack slot turns out to already be occupied -
+        see ConfirmCtOverwriteModal."""
         if self.index is None or not self.entries:
             return
         _, config = self.entries[self.index]
@@ -674,6 +907,15 @@ class ConfigList(ListView, VimGoToTopAndBottom):
             self.app.notify("Nothing held to export.", severity="warning")
             return
 
+        def handle_target(target: str | None) -> None:
+            if target == "folder":
+                self._export_to_folder(config)
+            elif target == "ct":
+                self._export_to_ct_start(config)
+
+        self.app.push_screen(ExportTargetModal(), handle_target)
+
+    def _export_to_folder(self, config: Configuration) -> None:
         def handle_result(destination: Path | None) -> None:
             if destination is None:
                 return
@@ -697,6 +939,104 @@ class ConfigList(ListView, VimGoToTopAndBottom):
             self.app.notify(message, severity="warning")
         else:
             self.app.notify(message)
+
+    def _export_to_ct_start(self, config: Configuration) -> None:
+        """First step of CT export: find the card automatically rather
+        than have the user pick a folder - circuit_tracks.find_ct_cards
+        scans every currently-mounted volume for a `Tracks` folder (the
+        one structural marker every real CT card has, since it has no
+        predictable volume label to auto-detect by like the P-6). A
+        folder picker here previously required the user to correctly
+        guess "the card's root, not its Tracks folder", which in
+        practice was easy to get wrong (picking Tracks itself made every
+        pack slot come back looking empty) - scanning for the marker
+        instead removes that ambiguity entirely."""
+        cards = circuit_tracks.find_ct_cards()
+        if not cards:
+            self.app.notify(
+                "No Circuit Tracks SD card found - make sure it's mounted and try again.",
+                severity="warning",
+            )
+            return
+        if len(cards) == 1:
+            self._export_to_ct_pick_slot(config, cards[0])
+            return
+
+        def handle_card(mount: Path | None) -> None:
+            if mount is not None:
+                self._export_to_ct_pick_slot(config, mount)
+
+        self.app.push_screen(CtCardPickerModal(cards), handle_card)
+
+    def _export_to_ct_pick_slot(self, config: Configuration, mount: Path) -> None:
+        if not circuit_tracks.is_writable(mount):
+            self.app.notify(
+                f"'{mount}' is mounted read-only - remount it read-write (or check the "
+                "card/adapter's write-protect state) before exporting.",
+                severity="warning",
+            )
+            return
+
+        slots = circuit_tracks.list_pack_slots(mount)
+
+        def handle_slot(pack_index: int | None) -> None:
+            if pack_index is None:
+                return
+            slot = next(s for s in slots if s.index == pack_index)
+            if slot.occupied:
+                def handle_confirm(confirmed: bool) -> None:
+                    if confirmed:
+                        self._run_ct_export(config, mount, pack_index)
+
+                self.app.push_screen(
+                    ConfirmCtOverwriteModal(pack_index, slot.name), handle_confirm
+                )
+            else:
+                self._run_ct_export(config, mount, pack_index)
+
+        self.app.push_screen(CtPackSlotModal(slots), handle_slot)
+
+    def _run_ct_export(self, config: Configuration, mount: Path, pack_index: int) -> None:
+        self.loading = True
+        self.run_worker(
+            self._export_to_ct(config, mount, pack_index),
+            exclusive=True,
+            group="export-ct",
+            name="export-ct",
+        )
+
+    async def _export_to_ct(self, config: Configuration, mount: Path, pack_index: int) -> None:
+        try:
+            result = await asyncio.to_thread(
+                circuit_tracks.send_pack_to_slot, config, mount, pack_index
+            )
+        finally:
+            self.loading = False
+
+        noun = "sample" if result.exported == 1 else "samples"
+        summary = (
+            f"Sent {result.exported} {noun} to Circuit Tracks pack {pack_index} "
+            f"('{result.destination.name}')."
+        )
+        concerning = False
+        if result.missing:
+            summary += f" ({len(result.missing)} missing, skipped)"
+            concerning = True
+
+        # Same reasoning as _send's own eject step below - leaving a safe
+        # removal as a manual step the user has to remember is exactly
+        # what corrupts a FAT card over repeated use (an unclean removal
+        # is a real, observed cause - see docs/tasks/04-export-to-ct.md).
+        if await device.unmount(mount):
+            message = f"{summary} Safely ejected - you can remove the card now."
+        else:
+            message = (
+                f"{summary} Couldn't safely eject automatically - eject the card "
+                "yourself before removing it."
+            )
+            concerning = True
+
+        self.app.notify(message, severity="warning" if concerning else "information")
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         self.last_opened = self.highlighted_configuration
