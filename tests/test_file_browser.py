@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 from rich.style import Style
+from textual.widgets import Input
 
 from shmample import tag_store
 from shmample.app import ShmampleApp
@@ -16,6 +17,7 @@ from shmample.widgets.holding_area import HoldingArea
 from shmample.widgets.main_column import MainColumn
 from shmample.widgets.preview_info import PreviewInfo
 from shmample.widgets.tag_browser import TagBrowser
+from shmample.widgets.vim_option_list import VimOptionList
 
 
 @pytest.fixture
@@ -810,3 +812,125 @@ async def test_a_with_an_active_selection_ignores_the_cursor_file(many_samples_d
         await pilot.pause()
 
         assert holding.configuration.pack.holding == [str(many_samples_dir / "sample0.wav")]
+
+
+async def _wait_for_folder_assign(app):
+    # Same reasoning as test_config_list.py's own _wait_for_new_from_directory
+    # - scope to just this action's own worker groups, one per choice
+    # FolderAssignModal can lead to.
+    workers = [w for w in app.workers if w.group in ("folder-assign", "new-from-directory")]
+    if workers:
+        await app.workers.wait_for_complete(workers)
+
+
+async def test_a_on_a_folder_with_no_pack_open_offers_only_create(samples_dir):
+    app = ShmampleApp(samples_directories=[samples_dir])
+    async with app.run_test() as pilot:
+        screens_before = len(app.screen_stack)
+        browser = app.query_one("#files", FileBrowser)
+        root_node = await _root(browser, pilot, samples_dir)
+        browser.focus()
+        browser.move_cursor(_node(root_node, "Nested"))
+        await pilot.pause()
+
+        await pilot.press("a")
+        await pilot.pause()
+
+        assert len(app.screen_stack) == screens_before + 1
+        options = app.screen.query_one(VimOptionList)
+        prompts = [str(options.get_option_at_index(i).prompt) for i in range(options.option_count)]
+        assert prompts == ["Create new pack from folder", "Cancel"]
+
+
+async def test_a_on_a_folder_with_a_pack_open_offers_add_first(samples_dir):
+    app = ShmampleApp(samples_directories=[samples_dir])
+    async with app.run_test() as pilot:
+        browser = app.query_one("#files", FileBrowser)
+        _activate_configuration(app, name="Kit")
+        root_node = await _root(browser, pilot, samples_dir)
+        browser.focus()
+        browser.move_cursor(_node(root_node, "Nested"))
+        await pilot.pause()
+
+        await pilot.press("a")
+        await pilot.pause()
+
+        options = app.screen.query_one(VimOptionList)
+        prompts = [str(options.get_option_at_index(i).prompt) for i in range(options.option_count)]
+        assert prompts == ["Add to 'Kit'", "Create new pack from folder", "Cancel"]
+
+
+async def test_a_on_a_folder_confirm_add_holds_every_wav_recursively(samples_dir):
+    app = ShmampleApp(samples_directories=[samples_dir])
+    async with app.run_test() as pilot:
+        browser = app.query_one("#files", FileBrowser)
+        holding = app.query_one("#holding", HoldingArea)
+        _activate_configuration(app, name="Kit")
+        root_node = await _root(browser, pilot, samples_dir)
+        browser.focus()
+        browser.move_cursor(_node(root_node, "Nested"))  # holds Nested/Sub/tom.wav
+        await pilot.pause()
+
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("enter")  # "Add to 'Kit'" is the first, highlighted option
+        await pilot.pause()
+        await _wait_for_folder_assign(app)
+
+        assert holding.configuration.pack.holding == [
+            str(samples_dir / "Nested" / "Sub" / "tom.wav")
+        ]
+
+
+async def test_a_on_a_folder_escape_creates_and_adds_nothing(samples_dir):
+    app = ShmampleApp(samples_directories=[samples_dir])
+    async with app.run_test() as pilot:
+        browser = app.query_one("#files", FileBrowser)
+        holding = app.query_one("#holding", HoldingArea)
+        _activate_configuration(app, name="Kit")
+        root_node = await _root(browser, pilot, samples_dir)
+        browser.focus()
+        browser.move_cursor(_node(root_node, "Nested"))
+        await pilot.pause()
+
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert holding.configuration.pack.holding == []
+
+
+async def test_a_on_a_folder_confirm_create_starts_a_brand_new_pack(tmp_path):
+    samples = tmp_path / "samples"
+    drums = samples / "Drums"
+    drums.mkdir(parents=True)
+    (drums / "snare.wav").write_bytes(b"")
+    (drums / "notes.txt").write_bytes(b"")
+
+    app = ShmampleApp(samples_directories=[samples], configurations_dir=tmp_path / "configs")
+    async with app.run_test() as pilot:
+        browser = app.query_one("#files", FileBrowser)
+        root_node = await _root(browser, pilot, samples)
+        browser.focus()
+        browser.move_cursor(_node(root_node, "Drums"))
+        await pilot.pause()
+
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("enter")  # only option is "Create new pack from folder"
+        await pilot.pause()
+
+        app.screen.query_one("#name-input", Input).value = "Drum Kit"
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await _wait_for_folder_assign(app)
+
+        saved = list_configurations(tmp_path / "configs")
+        assert len(saved) == 1
+        assert saved[0][1].pack.name == "Drum Kit"
+        assert saved[0][1].pack.holding == [str(drums / "snare.wav")]
+
+        holding = app.query_one("#holding", HoldingArea)
+        assert holding.configuration is not None
+        assert holding.configuration.pack.name == "Drum Kit"

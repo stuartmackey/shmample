@@ -457,24 +457,32 @@ class ConfigList(ListView, VimGoToTopAndBottom):
         """
 
         def handle_directory(directory: Path | None) -> None:
-            if directory is None:
-                return
-
-            def handle_name(result: tuple[str, str] | None) -> None:
-                if result is None:
-                    return
-                name, description = result
-                self.loading = True
-                self.run_worker(
-                    self._create_from_directory(directory, name, description),
-                    exclusive=True,
-                    group="new-from-directory",
-                    name="new-from-directory",
-                )
-
-            self.app.push_screen(NewConfigurationModal(), handle_name)
+            if directory is not None:
+                self.start_new_configuration_from_directory(directory)
 
         self.app.push_screen(DirectoryPickerModal(Path.home()), handle_directory)
+
+    def start_new_configuration_from_directory(self, directory: Path) -> None:
+        """Prompts for a name/description, then pulls every .wav under
+        `directory` into a brand new pack in one go - the folder-already-
+        known half of action_new_configuration_from_directory above (which
+        picks the folder itself via DirectoryPickerModal first), also
+        reused directly by FileBrowser's "a"-on-a-folder submenu, which
+        already has a folder from the cursor and needs no picker at all."""
+
+        def handle_name(result: tuple[str, str] | None) -> None:
+            if result is None:
+                return
+            name, description = result
+            self.loading = True
+            self.run_worker(
+                self._create_from_directory(directory, name, description),
+                exclusive=True,
+                group="new-from-directory",
+                name="new-from-directory",
+            )
+
+        self.app.push_screen(NewConfigurationModal(), handle_name)
 
     async def _create_from_directory(self, directory: Path, name: str, description: str) -> None:
         def scan() -> list[str]:

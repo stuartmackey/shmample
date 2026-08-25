@@ -18,6 +18,7 @@ from textual.widgets.tree import TreeNode
 from shmample import auto_tag, config_store, library_scan, sample_store, tag_store
 from shmample import settings as settings_module
 from shmample.audio import NoPlayerFoundError, Previewer
+from shmample.widgets.config_list import ConfigList
 from shmample.widgets.directory_picker import DirectoryPickerModal
 from shmample.widgets.holding_area import HoldingArea
 from shmample.widgets.vim_navigation import VimGoToTopAndBottom
@@ -126,6 +127,86 @@ class ConfirmRemovePathModal(ModalScreen[bool]):
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         self.dismiss(event.option_id == "confirm")
+
+
+class FolderAssignModal(ModalScreen[str | None]):
+    """"a" on a folder (with nothing multi-selected) used to be a silent
+    no-op - there was no single obvious meaning for "hold this" applied to
+    a whole subtree. This offers the two that actually make sense instead:
+    fold every sample under it into whichever pack is already open in
+    Holding, or start a brand new pack from just this folder (the same
+    flow as ConfigList's ctrl+a, minus having to separately browse to a
+    folder it's already sitting on). Same lazygit-style OptionList +
+    detail-pane shape as this app's other modals, just with a live choice
+    instead of a plain yes/no - "add" is only offered at all when a pack
+    is actually open to add to.
+
+    Returns "add", "create", or None (cancelled, including plain escape) -
+    never a truthy value for "did nothing", so a caller can treat anything
+    but None as "do this now"."""
+
+    DEFAULT_CSS = """
+    FolderAssignModal {
+        align: center middle;
+    }
+    FolderAssignModal > Vertical {
+        width: 90%;
+        max-width: 33%;
+        height: auto;
+    }
+    FolderAssignModal OptionList {
+        border: round $success;
+        height: auto;
+    }
+    FolderAssignModal #detail {
+        border: round $success;
+        height: auto;
+        margin-top: 1;
+        padding: 0 1;
+    }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, folder_name: str, open_pack_name: str | None) -> None:
+        super().__init__()
+        self.folder_name = folder_name
+        self.open_pack_name = open_pack_name
+        self._options: list[Option] = []
+        self._details: list[str] = []
+        if open_pack_name is not None:
+            self._options.append(Option(f"Add to '{open_pack_name}'", id="add"))
+            self._details.append(
+                f"Recursively add every sample under '{folder_name}' to the "
+                f"currently open pack, '{open_pack_name}'."
+            )
+        self._options.append(Option("Create new pack from folder", id="create"))
+        self._details.append(f"Create a brand new pack from every sample under '{folder_name}'.")
+        self._options.append(Option("Cancel", id="cancel"))
+        self._details.append("Do nothing.")
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            options = VimOptionList(*self._options)
+            options.border_title = "Add folder to a pack"
+            options.border_subtitle = f"1 of {len(self._details)}"
+            yield options
+            yield Static(self._details[0], id="detail")
+
+    def on_mount(self) -> None:
+        self.query_one(VimOptionList).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        options = event.option_list
+        options.border_subtitle = f"{event.option_index + 1} of {options.option_count}"
+        self.query_one("#detail", Static).update(self._details[event.option_index])
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        option_id = event.option_id
+        self.dismiss(None if option_id == "cancel" else option_id)
 
 
 class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
@@ -591,16 +672,25 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
         """"a" no longer picks a bank/pad directly - it just adds the
         sample(s) to the configuration's device-agnostic holding area
         (see HoldingArea). Placing a held sample onto an actual pad is a
-        separate step, done from the holding area pane itself."""
+        separate step, done from the holding area pane itself.
+
+        On a folder, with nothing multi-selected, this instead opens
+        FolderAssignModal - there's no single obvious meaning for "hold
+        this" applied to a whole subtree, so it asks rather than either
+        silently doing nothing (the old behaviour) or guessing. That
+        branch doesn't require a pack to already be open (unlike every
+        other case here) since "create a new pack from this folder" is
+        one of the choices on offer.
+        """
         holding = self.app.query_one("#holding", HoldingArea)
-        if holding.configuration is None:
-            self.app.notify(
-                "Pick or create a configuration before adding samples.",
-                severity="warning",
-            )
-            return
 
         if self.selected:
+            if holding.configuration is None:
+                self.app.notify(
+                    "Pick or create a configuration before adding samples.",
+                    severity="warning",
+                )
+                return
             nodes = list(self.selected)
             added, already_held = holding.add_samples([node.data.path for node in nodes])
             self.selected.clear()
@@ -610,9 +700,71 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
             return
 
         node = self.cursor_node
-        if node is None or node.data is None or node.allow_expand:
+        if node is None or node.data is None:
+            return
+
+        if node.allow_expand:
+            self._start_folder_assign(node.data.path)
+            return
+
+        if holding.configuration is None:
+            self.app.notify(
+                "Pick or create a configuration before adding samples.",
+                severity="warning",
+            )
             return
         added, already_held = holding.add_samples([node.data.path])
+        self._notify_added_to_holding(added, already_held)
+
+    def _start_folder_assign(self, directory: Path) -> None:
+        holding = self.app.query_one("#holding", HoldingArea)
+        open_pack_name = (
+            holding.configuration.pack.name if holding.configuration is not None else None
+        )
+
+        def handle_result(choice: str | None) -> None:
+            if choice == "add":
+                self.run_worker(
+                    self._add_folder_to_holding(directory),
+                    exclusive=True,
+                    group="folder-assign",
+                    name="folder-assign",
+                )
+            elif choice == "create":
+                # Cross-widget, same precedent as HoldingArea reaching
+                # into AssignmentGrid directly (action_assign_cursor_item)
+                # rather than a round trip through App-level messages -
+                # ConfigList already owns the entire "pick a name, scan
+                # the folder, save" flow, so this just hands it the folder
+                # FileBrowser already has instead of duplicating it here.
+                self.app.query_one("#packs", ConfigList).start_new_configuration_from_directory(
+                    directory
+                )
+
+        self.app.push_screen(FolderAssignModal(directory.name, open_pack_name), handle_result)
+
+    async def _add_folder_to_holding(self, directory: Path) -> None:
+        def scan() -> list[Path]:
+            # Same rglob("*")+suffix filter as ConfigList._create_from_directory/
+            # library_scan.scan_library/auto_tag.tag_folder.
+            return sorted(
+                p for p in directory.rglob("*") if p.is_file() and p.suffix.lower() == ".wav"
+            )
+
+        self.loading = True
+        try:
+            wav_paths = await asyncio.to_thread(scan)
+        finally:
+            self.loading = False
+
+        holding = self.app.query_one("#holding", HoldingArea)
+        if holding.configuration is None:
+            self.app.notify(
+                "Pick or create a configuration before adding samples.",
+                severity="warning",
+            )
+            return
+        added, already_held = holding.add_samples(wav_paths)
         self._notify_added_to_holding(added, already_held)
 
     def _notify_added_to_holding(self, added: list[Path], already_held: list[Path]) -> None:
