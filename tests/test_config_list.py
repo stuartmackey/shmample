@@ -147,6 +147,176 @@ async def test_n_then_cancel_creates_nothing(tmp_path):
         assert configs.entries == []
 
 
+async def _wait_for_new_from_directory(app):
+    # Same reasoning as _wait_for_export/_wait_for_send above - scope to
+    # just this action's own worker group.
+    workers = [w for w in app.workers if w.group == "new-from-directory"]
+    if workers:
+        await app.workers.wait_for_complete(workers)
+
+
+async def test_ctrl_a_creates_a_pack_from_every_wav_found_recursively(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    samples = home / "Samples"
+    (samples / "sub").mkdir(parents=True)
+    kick = samples / "kick.wav"
+    kick.write_bytes(b"kick-data")
+    snare = samples / "sub" / "snare.wav"
+    snare.write_bytes(b"snare-data")
+    (samples / "notes.txt").write_text("not a sample")
+    monkeypatch.setattr(Path, "home", lambda: home)
+
+    app = ConfigListApp(tmp_path)
+    async with app.run_test() as pilot:
+        configs = app.query_one(ConfigList)
+        configs.focus()
+        await pilot.pause()
+
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+
+        tree = app.screen.query_one("_DirsOnlyDirectoryTree")
+        samples_node = next(n for n in tree.root.children if "Samples" in str(n.label))
+        tree.move_cursor(samples_node)
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+
+        app.screen.query_one("#name-input", Input).value = "My Kit"
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await _wait_for_new_from_directory(app)
+
+        saved = list_configurations(tmp_path)
+        assert len(saved) == 1
+        assert saved[0][1].pack.name == "My Kit"
+        assert sorted(saved[0][1].pack.holding) == sorted([str(kick), str(snare)])
+
+
+async def test_ctrl_a_posts_opened_so_the_new_pack_is_immediately_active(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    samples = home / "Samples"
+    samples.mkdir(parents=True)
+    kick = samples / "kick.wav"
+    kick.write_bytes(b"kick-data")
+    monkeypatch.setattr(Path, "home", lambda: home)
+
+    opened = []
+
+    class TrackingConfigListApp(ConfigListApp):
+        def on_config_list_opened(self, message: ConfigList.Opened) -> None:
+            opened.append((message.path, message.configuration))
+
+    app = TrackingConfigListApp(tmp_path)
+    async with app.run_test() as pilot:
+        configs = app.query_one(ConfigList)
+        configs.focus()
+        await pilot.pause()
+
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+
+        tree = app.screen.query_one("_DirsOnlyDirectoryTree")
+        samples_node = next(n for n in tree.root.children if "Samples" in str(n.label))
+        tree.move_cursor(samples_node)
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+
+        app.screen.query_one("#name-input", Input).value = "My Kit"
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await _wait_for_new_from_directory(app)
+
+        assert len(opened) == 1
+        path, config = opened[0]
+        assert config.pack.holding == [str(kick)]
+        assert path in [p for p, _ in list_configurations(tmp_path)]
+
+
+async def test_ctrl_a_then_escape_at_the_folder_picker_creates_nothing(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: home)
+
+    app = ConfigListApp(tmp_path)
+    async with app.run_test() as pilot:
+        configs = app.query_one(ConfigList)
+        configs.focus()
+        await pilot.pause()
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert list_configurations(tmp_path) == []
+        assert configs.entries == []
+
+
+async def test_ctrl_a_then_escape_at_the_name_prompt_creates_nothing(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    samples = home / "Samples"
+    samples.mkdir(parents=True)
+    (samples / "kick.wav").write_bytes(b"kick-data")
+    monkeypatch.setattr(Path, "home", lambda: home)
+
+    app = ConfigListApp(tmp_path)
+    async with app.run_test() as pilot:
+        configs = app.query_one(ConfigList)
+        configs.focus()
+        await pilot.pause()
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+
+        tree = app.screen.query_one("_DirsOnlyDirectoryTree")
+        samples_node = next(n for n in tree.root.children if "Samples" in str(n.label))
+        tree.move_cursor(samples_node)
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert list_configurations(tmp_path) == []
+        assert configs.entries == []
+
+
+async def test_ctrl_a_with_no_wav_files_still_creates_an_empty_pack(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    samples = home / "Samples"
+    samples.mkdir(parents=True)
+    (samples / "notes.txt").write_text("not a sample")
+    monkeypatch.setattr(Path, "home", lambda: home)
+
+    app = ConfigListApp(tmp_path)
+    notifications = []
+    app.notify = lambda message, **kwargs: notifications.append((message, kwargs.get("severity")))
+    async with app.run_test() as pilot:
+        configs = app.query_one(ConfigList)
+        configs.focus()
+        await pilot.pause()
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+
+        tree = app.screen.query_one("_DirsOnlyDirectoryTree")
+        samples_node = next(n for n in tree.root.children if "Samples" in str(n.label))
+        tree.move_cursor(samples_node)
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+
+        app.screen.query_one("#name-input", Input).value = "My Kit"
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await _wait_for_new_from_directory(app)
+
+        saved = list_configurations(tmp_path)
+        assert len(saved) == 1
+        assert saved[0][1].pack.holding == []
+        assert any(severity == "warning" for _, severity in notifications)
+
+
 async def test_c_then_confirm_duplicates_the_highlighted_configuration(tmp_path):
     _save(tmp_path, "Kit A", description="desc", assignments={("A", "1"): "/samples/kick.wav"})
     app = ConfigListApp(tmp_path)

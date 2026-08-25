@@ -300,6 +300,7 @@ class ConfigList(ListView, VimGoToTopAndBottom):
         Binding("j", "cursor_down", "Down (vim)", show=False),
         Binding("k", "cursor_up", "Up (vim)", show=False),
         Binding("n", "new_configuration", "New"),
+        Binding("ctrl+a", "new_configuration_from_directory", "From folder"),
         Binding("c", "clone_selected", "Clone"),
         Binding("d", "delete_selected", "Delete"),
         Binding("s", "send_to_device", "Send"),
@@ -442,6 +443,77 @@ class ConfigList(ListView, VimGoToTopAndBottom):
             self.post_message(self.Opened(path, config))
 
         self.app.push_screen(NewConfigurationModal(), handle_result)
+
+    def action_new_configuration_from_directory(self) -> None:
+        """ctrl+a: pick a folder, name a pack, and recursively pull every
+        .wav under it straight into that pack's holding area in one go -
+        the bulk-import counterpart to "n"'s empty pack, for someone who
+        already has a folder of samples they just want to get in as a
+        single unit rather than one-at-a-time via FileBrowser's "a" chord.
+
+        Folder first, then name, matching the order the picker/prompt are
+        chained in below - and matching how the feature was described:
+        browse to the folder, *then* say what to call it.
+        """
+
+        def handle_directory(directory: Path | None) -> None:
+            if directory is None:
+                return
+
+            def handle_name(result: tuple[str, str] | None) -> None:
+                if result is None:
+                    return
+                name, description = result
+                self.loading = True
+                self.run_worker(
+                    self._create_from_directory(directory, name, description),
+                    exclusive=True,
+                    group="new-from-directory",
+                    name="new-from-directory",
+                )
+
+            self.app.push_screen(NewConfigurationModal(), handle_name)
+
+        self.app.push_screen(DirectoryPickerModal(Path.home()), handle_directory)
+
+    async def _create_from_directory(self, directory: Path, name: str, description: str) -> None:
+        def scan() -> list[str]:
+            # Same rglob("*")+suffix filter as library_scan.scan_library
+            # and auto_tag.tag_folder - .wav only, consistent with the
+            # rest of the app being WAV-centric throughout.
+            return sorted(
+                str(p) for p in directory.rglob("*") if p.is_file() and p.suffix.lower() == ".wav"
+            )
+
+        try:
+            wav_paths = await asyncio.to_thread(scan)
+        finally:
+            self.loading = False
+
+        now = datetime.now()
+        config = Configuration(
+            pack=Pack(
+                name=name,
+                description=description,
+                created_at=now,
+                modified_at=now,
+                holding=wav_paths,
+            )
+        )
+        path = save_configuration(config, self.configurations_dir)
+        self.refresh_list()
+        # Same reasoning as action_new_configuration's own post_message -
+        # immediately active in the assignment grid/holding area too.
+        self.post_message(self.Opened(path, config))
+
+        noun = "sample" if len(wav_paths) == 1 else "samples"
+        if wav_paths:
+            self.app.notify(f"Created '{name}' with {len(wav_paths)} {noun} from '{directory.name}'.")
+        else:
+            self.app.notify(
+                f"Created '{name}' - no .wav files found under '{directory.name}'.",
+                severity="warning",
+            )
 
     def action_clone_selected(self) -> None:
         if self.index is None or not self.entries:
