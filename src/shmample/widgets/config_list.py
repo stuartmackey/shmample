@@ -85,6 +85,55 @@ class NewConfigurationModal(ModalScreen[tuple[str, str] | None]):
         self.action_submit()
 
 
+class RenameConfigurationModal(ModalScreen[str | None]):
+    """Single-field rename prompt for `r` - same floating-input look as
+    NewConfigurationModal, but just the name (a pack's description/holding/
+    assignments are untouched by a rename), pre-filled and pre-selected so
+    typing straight away replaces the whole thing."""
+
+    DEFAULT_CSS = """
+    RenameConfigurationModal {
+        align: center middle;
+    }
+    RenameConfigurationModal > Vertical {
+        width: 90%;
+        max-width: 33%;
+        height: auto;
+    }
+    RenameConfigurationModal #name-input {
+        border: round $success;
+        height: 3;
+    }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, current_name: str) -> None:
+        super().__init__()
+        self.current_name = current_name
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            name_input = Input(value=self.current_name, id="name-input")
+            name_input.border_title = "Rename pack"
+            name_input.border_subtitle = "enter: rename  esc: cancel"
+            yield name_input
+
+    def on_mount(self) -> None:
+        name_input = self.query_one("#name-input", Input)
+        name_input.focus()
+        name_input.select_all()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Input.Submitted)
+    def _name_submitted(self) -> None:
+        name = self.query_one("#name-input", Input).value.strip()
+        if name:
+            self.dismiss(name)
+
+
 class ConfirmCloneModal(ModalScreen[bool]):
     """Clone confirmation - same OptionList + detail-pane shape as
     ConfirmDeleteModal below, but styled $success since duplicating a
@@ -536,6 +585,7 @@ class ConfigList(ListView, VimGoToTopAndBottom):
         Binding("k", "cursor_up", "Up (vim)", show=False),
         Binding("n", "new_configuration", "New"),
         Binding("ctrl+a", "new_configuration_from_directory", "From folder"),
+        Binding("r", "rename_selected", "Rename"),
         Binding("c", "clone_selected", "Clone"),
         Binding("d", "delete_selected", "Delete"),
         Binding("s", "send_to_device", "Send"),
@@ -564,6 +614,24 @@ class ConfigList(ListView, VimGoToTopAndBottom):
             super().__init__()
             self.path = path
             self.configuration = configuration
+
+    class Renamed(Message):
+        """Posted when `r` renames a configuration - AssignmentGrid/
+        HoldingArea each hold their own Configuration object once opened
+        (see Opened above), a separate instance from ConfigList's own
+        freshly-reloaded copy, so a rename here wouldn't otherwise be
+        visible to whichever pane currently has this same path open. Left
+        unnoticed, that pane's *next* unrelated save (e.g. adding a held
+        sample) would write its own still-stale name straight back over
+        the rename. Carries the path (to match against each pane's own
+        `configuration_path`) rather than the Configuration object itself,
+        since each pane's in-place update is against its own instance.
+        """
+
+        def __init__(self, path: Path, name: str) -> None:
+            super().__init__()
+            self.path = path
+            self.name = name
 
     def __init__(
         self, configurations_dir: Path | None = None, *args, **kwargs
@@ -757,6 +825,25 @@ class ConfigList(ListView, VimGoToTopAndBottom):
                 f"Created '{name}' - no .wav files found under '{directory.name}'.",
                 severity="warning",
             )
+
+    def action_rename_selected(self) -> None:
+        if self.index is None or not self.entries:
+            return
+        path, config = self.entries[self.index]
+
+        def handle_result(name: str | None) -> None:
+            if name is None or name == config.pack.name:
+                return
+            config.pack.name = name
+            config.pack.modified_at = datetime.now()
+            # Same path, not re-slugified - a rename changes the display
+            # name only, same reasoning as remove_samples_under re-saving
+            # a modified pack at its existing path rather than moving it.
+            save_configuration(config, self.configurations_dir, path)
+            self.refresh_list()
+            self.post_message(self.Renamed(path, name))
+
+        self.app.push_screen(RenameConfigurationModal(config.pack.name), handle_result)
 
     def action_clone_selected(self) -> None:
         if self.index is None or not self.entries:

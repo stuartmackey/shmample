@@ -1,10 +1,12 @@
 """Direct SD-card export to a Novation Circuit Tracks (CT).
 
 Writes a held pack straight onto a CT's microSD card as a plain
-`Tracks/<NN>_<name>/{meta/00_META.ncm, PCM/*.wav}` folder - the layout
-reverse-engineered by hand in docs/tasks/04-export-to-ct.md's round 3/5
-notes, and confirmed end-to-end on real hardware (Novation Components
-recognised a hand-written pack, and the CT itself loaded and played it).
+`Tracks/<NN>_<name>/{meta/00_META.ncm, PCM/*.wav, Patches/*.cpb}` folder -
+the layout reverse-engineered by hand in docs/tasks/04-export-to-ct.md's
+round 3/5 notes, and confirmed end-to-end on real hardware (Novation
+Components recognised a hand-written pack, and the CT itself loaded and
+played it). `Patches` is always the same bundled default bank (round 6) -
+see DEFAULT_PATCHES_DIR - not anything derived from `configuration`.
 
 CT pack slots are numbered 1-32 on the device, but slot 1 is the
 internal-only "Waves" kit baked into flash - it has no SD-card folder at
@@ -21,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from shmample import device
+from shmample.audio_convert import SampleFormat, convert_sample
 from shmample.config_store import Configuration
 
 TRACKS_DIRNAME = "Tracks"
@@ -28,11 +31,31 @@ TRACKS_DIRNAME = "Tracks"
 MIN_PACK_INDEX = 2
 MAX_PACK_INDEX = 32
 
+# Confirmed on real hardware (docs/tasks/04-export-to-ct.md round 6): a pack
+# whose samples aren't exactly 48kHz/mono, or that carry any RIFF chunk
+# beyond a bare `fmt `/`data` pair, is never recognised by the CT at all -
+# not degraded playback, not a truncated sample, the whole pack silently
+# fails to load. Every genuine Novation-authored pack on a real card matches
+# this shape exactly; every pack built from an arbitrary commercial sample
+# library didn't, regardless of how it was otherwise valid, complete WAV
+# data. convert_sample (not a plain copy) is what enforces this shape.
+CT_SAMPLE_FORMAT = SampleFormat(frame_rate=48000, channels=1)
+
 # A real zero-Sessions pack's meta/00_META.ncm is exactly these two bytes
 # (confirmed by reading several factory sample-only packs off a real
 # card) - there's no documented meaning beyond "present and this size".
 META_FILENAME = "00_META.ncm"
 META_CONTENT = b"\x00\x00"
+
+# shmample has no synth-patch editing feature of its own, so a pack it
+# writes would otherwise have no Patches folder at all - which, on real
+# hardware, left every pad playing the same single default synth sound
+# rather than anything actually shaped. Bundled from a genuine
+# Novation-authored pack (`01_Waves_SoundGhost` on Stuart's card) so every
+# exported pack ships with a full, real bank of usable patches instead -
+# these are opaque device-specific binary blobs (`.cpb`), not something
+# this project can generate, so they're copied verbatim rather than built.
+DEFAULT_PATCHES_DIR = Path(__file__).parent / "assets" / "ct_default_patches"
 
 _FOLDER_RE = re.compile(r"^(\d{2})_(.+)$")
 _INVALID_FAT32_CHARS = re.compile(r'[\\/:*?"<>|]')
@@ -133,7 +156,10 @@ class CtExportResult:
 def send_pack_to_slot(configuration: Configuration, mount: Path, pack_index: int) -> CtExportResult:
     """Writes `configuration`'s held samples as a new pack folder at
     `pack_index` (2-32), in holding order (`00_`, `01_`, ...), replacing
-    whatever's already in that slot entirely.
+    whatever's already in that slot entirely. Also bundles the fixed
+    default `Patches` bank (see DEFAULT_PATCHES_DIR) into every pack
+    written this way, since shmample has no synth-patch feature of its own
+    to populate one otherwise.
 
     Mirrors device.py's send_configuration durability pattern (explicit
     fsync of every written file, then of the directory chain up to
@@ -163,12 +189,19 @@ def send_pack_to_slot(configuration: Configuration, mount: Path, pack_index: int
     pack_dir = tracks_root / folder_name
     meta_dir = pack_dir / "meta"
     pcm_dir = pack_dir / "PCM"
+    patches_dir = pack_dir / "Patches"
     meta_dir.mkdir(parents=True)
     pcm_dir.mkdir(parents=True)
+    patches_dir.mkdir(parents=True)
 
     meta_path = meta_dir / META_FILENAME
     meta_path.write_bytes(META_CONTENT)
     device._fsync_up_to(meta_path, mount)
+
+    for patch_source in sorted(DEFAULT_PATCHES_DIR.iterdir()):
+        patch_dest = patches_dir / patch_source.name
+        shutil.copy2(patch_source, patch_dest)
+        device._fsync_up_to(patch_dest, mount)
 
     exported = 0
     missing: list[str] = []
@@ -178,7 +211,7 @@ def send_pack_to_slot(configuration: Configuration, mount: Path, pack_index: int
             missing.append(sample_path)
             continue
         dest = pcm_dir / f"{i:02d}_{_fat32_safe(source.name)}"
-        shutil.copy2(source, dest)
+        convert_sample(source, dest, CT_SAMPLE_FORMAT)
         device._fsync_up_to(dest, mount)
         exported += 1
 

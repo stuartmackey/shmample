@@ -1,7 +1,11 @@
+import wave
+
 import pytest
 
 from shmample import device
 from shmample.circuit_tracks import (
+    CT_SAMPLE_FORMAT,
+    DEFAULT_PATCHES_DIR,
     MAX_PACK_INDEX,
     MIN_PACK_INDEX,
     find_ct_cards,
@@ -24,6 +28,19 @@ def _configuration(holding=()):
             holding=list(holding),
         )
     )
+
+
+def _write_wav(path, frame_rate=44100, channels=1, nframes=200):
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(2)
+        w.setframerate(frame_rate)
+        w.writeframes(b"\x00\x01" * nframes * channels)
+
+
+def _read_wav(path):
+    with wave.open(str(path), "rb") as w:
+        return w.getframerate(), w.getnchannels(), w.getsampwidth()
 
 
 def test_is_writable_true_for_a_normal_directory(tmp_path):
@@ -102,9 +119,9 @@ def test_list_pack_slots_skips_an_entry_that_cant_be_stat_d(tmp_path, monkeypatc
 
 def test_send_pack_to_slot_writes_holding_order_into_a_new_slot(tmp_path):
     kick = tmp_path / "kick.wav"
-    kick.write_bytes(b"kick-data")
+    _write_wav(kick)
     snare = tmp_path / "snare.wav"
-    snare.write_bytes(b"snare-data")
+    _write_wav(snare)
     mount = tmp_path / "mount"
 
     result = send_pack_to_slot(_configuration([str(kick), str(snare)]), mount, pack_index=2)
@@ -114,13 +131,21 @@ def test_send_pack_to_slot_writes_holding_order_into_a_new_slot(tmp_path):
     pack_dir = mount / "Tracks" / "00_My Kit"
     assert result.destination == pack_dir
     assert (pack_dir / "meta" / "00_META.ncm").read_bytes() == b"\x00\x00"
-    assert (pack_dir / "PCM" / "00_kick.wav").read_bytes() == b"kick-data"
-    assert (pack_dir / "PCM" / "01_snare.wav").read_bytes() == b"snare-data"
+    assert _read_wav(pack_dir / "PCM" / "00_kick.wav") == (
+        CT_SAMPLE_FORMAT.frame_rate,
+        CT_SAMPLE_FORMAT.channels,
+        2,
+    )
+    assert _read_wav(pack_dir / "PCM" / "01_snare.wav") == (
+        CT_SAMPLE_FORMAT.frame_rate,
+        CT_SAMPLE_FORMAT.channels,
+        2,
+    )
 
 
 def test_send_pack_to_slot_skips_missing_sources_and_reports_them(tmp_path):
     kick = tmp_path / "kick.wav"
-    kick.write_bytes(b"kick-data")
+    _write_wav(kick)
     missing = str(tmp_path / "gone.wav")
     mount = tmp_path / "mount"
 
@@ -139,13 +164,51 @@ def test_send_pack_to_slot_replaces_whatever_already_occupied_that_slot(tmp_path
     (old_pack / "PCM" / "00_old.wav").write_bytes(b"old-data")
 
     kick = tmp_path / "kick.wav"
-    kick.write_bytes(b"kick-data")
+    _write_wav(kick)
 
     result = send_pack_to_slot(_configuration([str(kick)]), mount, pack_index=2)
 
     assert not old_pack.exists()
     assert result.destination == mount / "Tracks" / "00_My Kit"
-    assert (result.destination / "PCM" / "00_kick.wav").read_bytes() == b"kick-data"
+    assert _read_wav(result.destination / "PCM" / "00_kick.wav") == (
+        CT_SAMPLE_FORMAT.frame_rate,
+        CT_SAMPLE_FORMAT.channels,
+        2,
+    )
+
+
+def test_send_pack_to_slot_converts_samples_to_the_ct_required_format(tmp_path):
+    # Live-hardware-confirmed (docs/tasks/04-export-to-ct.md round 6): a
+    # source sample at any rate other than 48kHz mono is never recognised
+    # by the CT, regardless of otherwise being a perfectly valid WAV.
+    source = tmp_path / "source.wav"
+    _write_wav(source, frame_rate=44100, channels=2)
+    mount = tmp_path / "mount"
+
+    result = send_pack_to_slot(_configuration([str(source)]), mount, pack_index=2)
+
+    assert result.exported == 1
+    dest = result.destination / "PCM" / "00_source.wav"
+    assert _read_wav(dest) == (48000, 1, 2)
+
+
+def test_send_pack_to_slot_bundles_the_default_patches_bank(tmp_path):
+    # shmample has no synth-patch feature of its own - every pack it
+    # writes bundles a fixed default bank so pads don't all fall back to
+    # the same single sound (see DEFAULT_PATCHES_DIR).
+    kick = tmp_path / "kick.wav"
+    _write_wav(kick)
+    mount = tmp_path / "mount"
+
+    result = send_pack_to_slot(_configuration([str(kick)]), mount, pack_index=2)
+
+    expected = sorted(p.name for p in DEFAULT_PATCHES_DIR.iterdir())
+    actual = sorted(p.name for p in (result.destination / "Patches").iterdir())
+    assert actual == expected
+    for name in expected:
+        assert (result.destination / "Patches" / name).read_bytes() == (
+            DEFAULT_PATCHES_DIR / name
+        ).read_bytes()
 
 
 def test_send_pack_to_slot_rejects_an_out_of_range_index(tmp_path):

@@ -313,3 +313,86 @@ internal-only Pack 1, or a future no-card-removal workflow), but **for now,
 implementation work focuses on the direct SD card path only**. The round 4
 SysEx protocol findings stay documented above as-is for when that second
 method gets picked up later, rather than being acted on now.
+
+# Round 6 - live-hardware debugging of "pack written, samples not recognised"
+
+After `send_pack_to_slot` shipped, Stuart reported it was unreliable in
+practice: packs exported cleanly (right folder/file structure, valid WAV
+data, no write errors) but the CT often didn't recognise any of the samples
+in them - "moving to the pack is too fast" in the device's own Pack browser,
+no drum hits, no differentiated synth patches either. This was worked
+through methodically against Stuart's real card and CT, ruling out one
+variable at a time:
+
+- **Not a durability/eject problem.** Replaying `send_pack_to_slot` +
+  `device.unmount` in isolation (both a single sample and a realistic
+  12-sample pack) always ejected cleanly. Two packs where the real app
+  *did* fail to auto-eject were inspected byte-for-byte afterwards - every
+  WAV had a valid, complete header and correct audio data, no truncation.
+  The eject failure looks like an unrelated host-OS thing (this machine has
+  `gvfs-udisks2-volume-monitor`/`gvfsd-metadata` running, both known to
+  touch newly-written removable-media files), not data corruption.
+- **Not the pack slot.** A byte-for-byte copy of an already-broken pack
+  into a different, previously-unused slot was equally broken - ruling out
+  a stale/corrupted per-slot cache on the device.
+- **Not missing `Patches`/`Sessions` folders.** Adding a real `Patches`
+  folder (copied from a working factory pack) to an otherwise-broken pack
+  didn't fix it.
+- **Not "fewer than 64 samples".** Both genuine working packs on the test
+  card happened to have a full 64 PCM files, but this turned out to be
+  coincidental, not a requirement - see below.
+- **Confirmed: sample rate matters, and it's not just an artifact of
+  factory content (correcting the "just an observation" framing above).**
+  Comparing every working pack against every broken one on the same card
+  found exactly one variable that lined up every time: genuine
+  Novation-authored packs were 48kHz; everything shmample had written was
+  44.1kHz (from the user's own commercial sample libraries). A pack with
+  *all* samples resampled to 48kHz worked end-to-end on real hardware; the
+  same pack left at 44.1kHz (even with every other structural difference
+  fixed) did not. Per-file testing (fixing only one sample's rate inside an
+  otherwise-44.1kHz pack) never showed improvement - only a whole-pack
+  test isolated the effect, which matches a device that either validates
+  or fails to play a pack as a unit rather than per-sample.
+- **Also found and folded into the same fix: extra RIFF chunks.** Every
+  sample from the user's commercial sample libraries carried extra WAV
+  chunks beyond a bare `fmt `/`data` pair (a trailing `AFAn` metadata
+  chunk on every file tested, `cue `/`LIST` on some) - genuine
+  Novation-authored samples had none. This was tested independently
+  (stripping chunks alone, at 44.1kHz, still failed) so chunk-cleanliness
+  alone isn't sufficient - but the fix targets both properties together
+  since that's the shape every confirmed-working sample shares.
+- **Independent confirmation via Novation Components itself**: building a
+  new pack from the *same* source sample library through Components' own
+  "add samples" workflow (not a device-to-device pack copy, which just
+  relays existing bytes) produced a working pack, and its on-card files
+  turned out to be 48kHz mono with clean `fmt `/`data` headers - i.e.
+  Components does the same conversion internally, corroborating the
+  finding via the first-party tool.
+
+**Fix implemented**: `audio_convert.py` (new) converts every sample to a
+target `SampleFormat` (rate/channels/subtype) via `soundfile` (read/write,
+any container/PCM subtype) + `soxr` (high-quality resampling) rather than
+`shutil.copy2`, always re-writing through `soundfile` even when the source
+already matches - guaranteeing the bare `fmt `/`data` shape regardless of
+what chunks the source carried. `circuit_tracks.send_pack_to_slot` uses
+this with `CT_SAMPLE_FORMAT = SampleFormat(frame_rate=48000, channels=1)`.
+Deliberately scoped to the CT export path only - `device.py`'s
+`send_configuration` (P-6) and `config_store.export_holding` (plain folder
+export) are untouched, since neither has shown this failure mode and the
+P-6 pipeline's own format assumptions haven't been investigated. The
+conversion module itself is written generically (parameterised
+`SampleFormat`) so a future device with different requirements can reuse
+it without rework.
+
+**Follow-up**: separately, Stuart noticed every shmample-exported pack's
+synth patches all played the same single default sound - because
+`send_pack_to_slot` never wrote a `Patches` folder at all (only
+`meta`/`PCM`), and shmample has no synth-patch editing feature to
+generate one from. Fixed by bundling a fixed default patch bank (the 8
+`.cpb` files from `01_Waves_SoundGhost`, a genuine Novation-authored pack)
+as a project asset (`src/shmample/assets/ct_default_patches/`,
+`circuit_tracks.DEFAULT_PATCHES_DIR`) and writing it into every pack's
+`Patches` folder unconditionally, alongside whatever samples the pack
+itself holds - not a separate pack/slot, since the point is that every
+pack shmample writes should have real, usable patches, not just the one
+being actively exported.

@@ -8,9 +8,12 @@ from textual.app import App, ComposeResult
 from textual.widgets import Input, Label, Static, TextArea
 
 from shmample import circuit_tracks, device
+from shmample.app import ShmampleApp
 from shmample.config_store import Configuration, Pack, list_configurations, save_configuration
 from shmample.device import DeviceState
+from shmample.widgets.assignment_grid import AssignmentGrid
 from shmample.widgets.config_list import ConfigList
+from shmample.widgets.holding_area import HoldingArea
 
 
 def _write_wav(path, seconds, frame_rate=44_100, channels=1, sample_width=2):
@@ -315,6 +318,90 @@ async def test_ctrl_a_with_no_wav_files_still_creates_an_empty_pack(tmp_path, mo
         assert len(saved) == 1
         assert saved[0][1].pack.holding == []
         assert any(severity == "warning" for _, severity in notifications)
+
+
+async def test_r_opens_modal_prefilled_and_renames_on_submit(tmp_path):
+    _save(tmp_path, "Kit A", description="desc", holding=["/samples/kick.wav"])
+    app = ConfigListApp(tmp_path)
+    async with app.run_test() as pilot:
+        configs = app.query_one(ConfigList)
+        configs.focus()
+        await pilot.pause()
+        await pilot.press("r")
+        await pilot.pause()
+
+        name_input = app.screen.query_one("#name-input", Input)
+        assert name_input.value == "Kit A"
+
+        name_input.value = "Kit A Renamed"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        saved = list_configurations(tmp_path)
+        assert len(saved) == 1
+        assert saved[0][1].pack.name == "Kit A Renamed"
+        # Description/holding are untouched by a rename.
+        assert saved[0][1].pack.description == "desc"
+        assert saved[0][1].pack.holding == ["/samples/kick.wav"]
+        assert [c.pack.name for _, c in configs.entries] == ["Kit A Renamed"]
+
+
+async def test_r_then_escape_renames_nothing(tmp_path):
+    _save(tmp_path, "Kit A")
+    app = ConfigListApp(tmp_path)
+    async with app.run_test() as pilot:
+        configs = app.query_one(ConfigList)
+        configs.focus()
+        await pilot.pause()
+        await pilot.press("r")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert list_configurations(tmp_path)[0][1].pack.name == "Kit A"
+
+
+async def test_r_with_no_configurations_does_nothing(tmp_path):
+    app = ConfigListApp(tmp_path)
+    async with app.run_test() as pilot:
+        configs = app.query_one(ConfigList)
+        configs.focus()
+        await pilot.pause()
+
+        screens_before = len(app.screen_stack)
+        await pilot.press("r")  # should not raise
+        await pilot.pause()
+
+        assert len(app.screen_stack) == screens_before
+
+
+async def test_r_updates_the_name_live_in_an_already_open_holding_area(tmp_path):
+    # A rename mutates a freshly-reloaded Configuration object distinct
+    # from whatever HoldingArea/AssignmentGrid already have open (see
+    # ConfigList.Renamed's docstring) - without the Renamed message, this
+    # pack's *next* unrelated holding-area save would silently overwrite
+    # the rename with the stale name that pane still has in memory. Uses
+    # the real ShmampleApp (not the minimal ConfigListApp above), since
+    # that propagation is wired in app.py, not in ConfigList itself.
+    _save(tmp_path, "Kit A")
+    app = ShmampleApp(samples_directories=[], configurations_dir=tmp_path)
+    async with app.run_test() as pilot:
+        configs = app.query_one("#packs", ConfigList)
+        configs.focus()
+        await pilot.pause()
+        await pilot.press("enter")  # open it, so Holding/Assignments load it
+        await pilot.pause()
+
+        await pilot.press("r")
+        await pilot.pause()
+        app.screen.query_one("#name-input", Input).value = "Kit A Renamed"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        holding = app.query_one("#holding", HoldingArea)
+        assignments = app.query_one("#assignments", AssignmentGrid)
+        assert holding.configuration.pack.name == "Kit A Renamed"
+        assert assignments.configuration.pack.name == "Kit A Renamed"
 
 
 async def test_c_then_confirm_duplicates_the_highlighted_configuration(tmp_path):
@@ -982,7 +1069,7 @@ async def test_e_ct_writes_held_samples_to_a_chosen_empty_slot(tmp_path, monkeyp
     monkeypatch.setattr(circuit_tracks, "find_ct_cards", lambda: [mount])
 
     kick = tmp_path / "kick.wav"
-    kick.write_bytes(b"kick-data")
+    _write_wav(kick, seconds=0.01)
     _save(tmp_path, "My Kit", holding=[str(kick)])
 
     app = ConfigListApp(tmp_path)
@@ -1004,7 +1091,7 @@ async def test_e_ct_writes_held_samples_to_a_chosen_empty_slot(tmp_path, monkeyp
 
         pack_dir = mount / "Tracks" / "00_My Kit"
         assert (pack_dir / "meta" / "00_META.ncm").read_bytes() == b"\x00\x00"
-        assert (pack_dir / "PCM" / "00_kick.wav").read_bytes() == b"kick-data"
+        assert (pack_dir / "PCM" / "00_kick.wav").exists()
         # Same as _send's own eject step - device.unmount() can't find a
         # real block device for this fake mount, so the "couldn't safely
         # eject automatically" fallback is expected here, not a failure.
@@ -1023,7 +1110,7 @@ async def test_e_ct_confirms_before_overwriting_an_occupied_slot(tmp_path, monke
     (old_pack / "PCM" / "00_old.wav").write_bytes(b"old-data")
 
     kick = tmp_path / "kick.wav"
-    kick.write_bytes(b"kick-data")
+    _write_wav(kick, seconds=0.01)
     _save(tmp_path, "My Kit", holding=[str(kick)])
 
     app = ConfigListApp(tmp_path)
@@ -1045,7 +1132,7 @@ async def test_e_ct_confirms_before_overwriting_an_occupied_slot(tmp_path, monke
 
         pack_dir = mount / "Tracks" / "00_My Kit"
         assert not old_pack.exists()
-        assert (pack_dir / "PCM" / "00_kick.wav").read_bytes() == b"kick-data"
+        assert (pack_dir / "PCM" / "00_kick.wav").exists()
 
 
 async def test_e_ct_notifies_when_the_card_is_mounted_read_only(tmp_path, monkeypatch):
@@ -1113,7 +1200,7 @@ async def test_e_ct_shows_a_picker_when_multiple_cards_are_found(tmp_path, monke
     monkeypatch.setattr(circuit_tracks, "find_ct_cards", lambda: [card_a, card_b])
 
     kick = tmp_path / "kick.wav"
-    kick.write_bytes(b"kick-data")
+    _write_wav(kick, seconds=0.01)
     _save(tmp_path, "My Kit", holding=[str(kick)])
 
     app = ConfigListApp(tmp_path)
@@ -1133,7 +1220,7 @@ async def test_e_ct_shows_a_picker_when_multiple_cards_are_found(tmp_path, monke
         await _wait_for_export_ct(app)
         await pilot.pause()
 
-        assert (card_b / "Tracks" / "00_My Kit" / "PCM" / "00_kick.wav").read_bytes() == b"kick-data"
+        assert (card_b / "Tracks" / "00_My Kit" / "PCM" / "00_kick.wav").exists()
         assert not (card_a / "Tracks").exists()
 
 

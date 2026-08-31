@@ -1,0 +1,4 @@
+- rename a pack
+- view any attached devices
+- mount and unmount cards
+- specify position of samples

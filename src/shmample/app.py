@@ -208,6 +208,17 @@ class ShmampleApp(App):
         self.query_one("#assignments", AssignmentGrid).load(entry)
         self.query_one("#holding", HoldingArea).load(entry)
 
+    def on_config_list_renamed(self, message: ConfigList.Renamed) -> None:
+        # Only the pane(s) that currently have this exact path open need
+        # updating in place - see ConfigList.Renamed's own docstring for
+        # why this can't just be skipped.
+        assignments = self.query_one("#assignments", AssignmentGrid)
+        if assignments.configuration_path == message.path and assignments.configuration:
+            assignments.configuration.pack.name = message.name
+        holding = self.query_one("#holding", HoldingArea)
+        if holding.configuration_path == message.path and holding.configuration:
+            holding.configuration.pack.name = message.name
+
     def on_assignment_grid_saved(self, message: AssignmentGrid.Saved) -> None:
         self.query_one("#packs", ConfigList).refresh_list()
 
