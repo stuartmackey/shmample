@@ -25,7 +25,10 @@ def main() -> None:
             settings.samples_directories.append(directory)
             save_settings(settings)
 
-    ShmampleApp(samples_directories=settings.samples_directories).run()
+    ShmampleApp(
+        samples_directories=settings.samples_directories,
+        directory_aliases=settings.directory_aliases,
+    ).run()
 
 
 if __name__ == "__main__":

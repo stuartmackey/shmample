@@ -66,6 +66,7 @@ class MainColumn(Vertical):
         configurations_dir: Path | None = None,
         settings_path: Path | None = None,
         db_path: Path | None = None,
+        directory_aliases: dict[Path, str] | None = None,
         *args,
         **kwargs,
     ) -> None:
@@ -78,6 +79,7 @@ class MainColumn(Vertical):
         )
         self.settings_path = settings_path
         self.db_path = db_path
+        self.directory_aliases = directory_aliases
 
     def compose(self) -> ComposeResult:
         device_panel = DevicePanel(id="device")
@@ -101,6 +103,7 @@ class MainColumn(Vertical):
             self.settings_path,
             self.db_path,
             self.configurations_dir,
+            self.directory_aliases,
             id="files",
         )
         files.border_title = "[3] Samples"

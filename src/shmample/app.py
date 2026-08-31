@@ -124,6 +124,7 @@ class ShmampleApp(App):
         configurations_dir: Path | None = None,
         settings_path: Path | None = None,
         db_path: Path | None = None,
+        directory_aliases: dict[Path, str] | None = None,
         *args,
         **kwargs,
     ) -> None:
@@ -132,6 +133,7 @@ class ShmampleApp(App):
         self.configurations_dir = configurations_dir
         self.settings_path = settings_path
         self.db_path = db_path
+        self.directory_aliases = directory_aliases if directory_aliases is not None else {}
         self.theme = THEME
         self.device_state: device.DeviceState | None = None
         self._preview_timer: Timer | None = None
@@ -144,6 +146,7 @@ class ShmampleApp(App):
                 self.configurations_dir,
                 self.settings_path,
                 self.db_path,
+                self.directory_aliases,
                 id="main-column",
             )
             # Tags and Holding side by side on top, Preview spanning the

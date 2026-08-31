@@ -622,6 +622,149 @@ async def test_shift_d_collapsing_the_expanded_root_clears_the_accordion_state(t
         assert second_node.is_expanded
 
 
+async def test_r_opens_modal_prefilled_empty_and_sets_alias_on_submit(samples_dir, tmp_path):
+    settings_path = tmp_path / "settings.json"
+    app = ShmampleApp(samples_directories=[samples_dir], settings_path=settings_path)
+    async with app.run_test() as pilot:
+        browser = app.query_one("#files", FileBrowser)
+        root_node = await _root(browser, pilot, samples_dir)
+        browser.focus()
+        browser.move_cursor(root_node)
+        await pilot.pause()
+
+        await pilot.press("r")
+        await pilot.pause()
+
+        alias_input = app.screen.query_one("#alias-input", Input)
+        assert alias_input.value == ""
+
+        alias_input.value = "My Drums"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert str(root_node.label) == "My Drums"
+        assert browser.directory_aliases == {samples_dir: "My Drums"}
+        assert load_settings(settings_path).directory_aliases == {samples_dir: "My Drums"}
+
+
+async def test_r_again_prefills_the_existing_alias_and_can_amend_it(samples_dir, tmp_path):
+    settings_path = tmp_path / "settings.json"
+    app = ShmampleApp(samples_directories=[samples_dir], settings_path=settings_path)
+    async with app.run_test() as pilot:
+        browser = app.query_one("#files", FileBrowser)
+        root_node = await _root(browser, pilot, samples_dir)
+        browser.focus()
+        browser.move_cursor(root_node)
+        await pilot.pause()
+
+        await pilot.press("r")
+        await pilot.pause()
+        app.screen.query_one("#alias-input", Input).value = "My Drums"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        await pilot.press("r")
+        await pilot.pause()
+        assert app.screen.query_one("#alias-input", Input).value == "My Drums"
+
+        app.screen.query_one("#alias-input", Input).value = "Kicks and Snares"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert str(root_node.label) == "Kicks and Snares"
+        assert browser.directory_aliases == {samples_dir: "Kicks and Snares"}
+
+
+async def test_r_with_a_blank_value_clears_the_alias(samples_dir, tmp_path):
+    settings_path = tmp_path / "settings.json"
+    app = ShmampleApp(samples_directories=[samples_dir], settings_path=settings_path)
+    async with app.run_test() as pilot:
+        browser = app.query_one("#files", FileBrowser)
+        root_node = await _root(browser, pilot, samples_dir)
+        browser.focus()
+        browser.move_cursor(root_node)
+        await pilot.pause()
+
+        await pilot.press("r")
+        await pilot.pause()
+        app.screen.query_one("#alias-input", Input).value = "My Drums"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        await pilot.press("r")
+        await pilot.pause()
+        app.screen.query_one("#alias-input", Input).value = ""
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert str(root_node.label) == str(samples_dir)
+        assert browser.directory_aliases == {}
+        assert load_settings(settings_path).directory_aliases == {}
+
+
+async def test_r_then_escape_sets_nothing(samples_dir, tmp_path):
+    settings_path = tmp_path / "settings.json"
+    app = ShmampleApp(samples_directories=[samples_dir], settings_path=settings_path)
+    async with app.run_test() as pilot:
+        browser = app.query_one("#files", FileBrowser)
+        root_node = await _root(browser, pilot, samples_dir)
+        browser.focus()
+        browser.move_cursor(root_node)
+        await pilot.pause()
+
+        await pilot.press("r")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert str(root_node.label) == str(samples_dir)
+        assert browser.directory_aliases == {}
+
+
+async def test_check_action_hides_set_path_alias_off_a_root(samples_dir):
+    app = ShmampleApp(samples_directories=[samples_dir])
+    async with app.run_test() as pilot:
+        browser = app.query_one("#files", FileBrowser)
+        root_node = await _root(browser, pilot, samples_dir)
+        kick_node = _node(root_node, "kick.wav")
+        browser.focus()
+
+        browser.move_cursor(root_node)
+        await pilot.pause()
+        assert browser.check_action("set_path_alias", ()) is True
+
+        browser.move_cursor(kick_node)
+        await pilot.pause()
+        assert browser.check_action("set_path_alias", ()) is False
+
+
+async def test_shift_d_on_an_aliased_path_also_drops_the_alias(samples_dir, tmp_path):
+    settings_path = tmp_path / "settings.json"
+    app = ShmampleApp(samples_directories=[samples_dir], settings_path=settings_path)
+    async with app.run_test() as pilot:
+        browser = app.query_one("#files", FileBrowser)
+        root_node = await _root(browser, pilot, samples_dir)
+        browser.focus()
+        browser.move_cursor(root_node)
+        await pilot.pause()
+
+        await pilot.press("r")
+        await pilot.pause()
+        app.screen.query_one("#alias-input", Input).value = "My Drums"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        browser.move_cursor(root_node)
+        await pilot.pause()
+        await pilot.press("D")
+        await pilot.pause()
+        await pilot.press("enter")  # "Remove '...'" is the first, highlighted option
+        await pilot.pause()
+
+        assert browser.directory_aliases == {}
+        assert load_settings(settings_path).directory_aliases == {}
+
+
 async def test_column_takes_a_third_of_the_width_and_full_height(samples_dir):
     app = ShmampleApp(samples_directories=[samples_dir])
     async with app.run_test(size=(120, 40)):

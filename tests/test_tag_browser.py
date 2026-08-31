@@ -4,7 +4,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Label
 
 from shmample.settings import Settings, save_settings
-from shmample.tag_store import auto_assign_tag, delete_tag, tags_for_sample
+from shmample.tag_store import auto_assign_tag, delete_tag, tag_counts, tags_for_sample
 from shmample.widgets.tag_browser import TagBrowser
 
 
@@ -265,6 +265,84 @@ async def test_shift_c_with_nothing_unused_notifies_and_asks_nothing(tmp_path):
 
         assert len(app.screen_stack) == screens_before  # no confirmation needed
         assert _labels(tags) == ["drums (1)"]
+
+
+async def test_d_asks_for_confirmation_before_deleting_a_tag(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    kick = tmp_path / "kick.wav"
+    auto_assign_tag(kick, "kick", db_path)
+
+    app = TagBrowserApp(db_path)
+    async with app.run_test() as pilot:
+        screens_before = len(app.screen_stack)
+        tags = app.query_one(TagBrowser)
+        tags.focus()
+        await pilot.pause()
+
+        await pilot.press("d")
+        await pilot.pause()
+
+        assert len(app.screen_stack) == screens_before + 1
+        assert tags_for_sample(kick, db_path) == {"kick"}  # untouched while unconfirmed
+
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert len(app.screen_stack) == screens_before
+        assert _labels(tags) == ["kick (1)"]
+
+
+async def test_d_confirm_soft_deletes_the_tag_and_it_survives_a_rescan(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    kick = tmp_path / "kick.wav"
+    snare = tmp_path / "snare.wav"
+    auto_assign_tag(kick, "kick", db_path)
+    auto_assign_tag(snare, "snare", db_path)
+
+    app = TagBrowserApp(db_path)
+    async with app.run_test() as pilot:
+        tags = app.query_one(TagBrowser)
+        tags.focus()
+        await pilot.pause()
+        assert _labels(tags) == ["kick (1)", "snare (1)"]
+
+        await pilot.press("d")
+        await pilot.pause()
+        await pilot.press("enter")  # "Delete 'kick'" is the first, highlighted option
+        await pilot.pause()
+
+        assert _labels(tags) == ["snare (1)"]
+        assert tags_for_sample(kick, db_path) == set()
+
+        # A rescan must not silently bring a deleted tag back.
+        auto_assign_tag(kick, "kick", db_path)
+        assert tags_for_sample(kick, db_path) == set()
+        assert tag_counts(db_path) == [("snare", 1)]
+
+
+async def test_deleting_a_selected_tag_also_drops_it_from_the_active_filter(tmp_path):
+    db_path = tmp_path / "shmample.db"
+    kick = tmp_path / "kick.wav"
+    snare = tmp_path / "snare.wav"
+    auto_assign_tag(kick, "kick", db_path)
+    auto_assign_tag(snare, "snare", db_path)
+
+    app = TagBrowserApp(db_path)
+    async with app.run_test() as pilot:
+        tags = app.query_one(TagBrowser)
+        tags.focus()
+        await pilot.pause()
+
+        await pilot.press("space")  # select "kick"
+        await pilot.pause()
+        assert tags.selected_tags == {"kick"}
+
+        await pilot.press("d")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert tags.selected_tags == set()
 
 
 async def test_vim_keys_navigate(tmp_path):

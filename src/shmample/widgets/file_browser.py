@@ -5,13 +5,13 @@ from pathlib import Path
 
 from rich.style import Style
 from rich.text import Text
-from textual import events
+from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import OptionList, Static, Tree
+from textual.widgets import Input, OptionList, Static, Tree
 from textual.widgets.option_list import Option
 from textual.widgets.tree import TreeNode
 
@@ -127,6 +127,57 @@ class ConfirmRemovePathModal(ModalScreen[bool]):
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         self.dismiss(event.option_id == "confirm")
+
+
+class PathAliasModal(ModalScreen[str | None]):
+    """Prompts for a display alias for a configured samples directory - "r"
+    on a root node (see FileBrowser.action_set_path_alias). Same
+    single-Input shape as ConfigList's own RenameConfigurationModal, except
+    an empty submission is a meaningful result of its own (clears the
+    alias, reverting the tree to the full path) rather than being treated
+    the same as cancelling - escape is the only way to leave things
+    untouched."""
+
+    DEFAULT_CSS = """
+    PathAliasModal {
+        align: center middle;
+    }
+    PathAliasModal > Vertical {
+        width: 90%;
+        max-width: 33%;
+        height: auto;
+    }
+    PathAliasModal #alias-input {
+        border: round $success;
+        height: 3;
+    }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, path: Path, current_alias: str | None) -> None:
+        super().__init__()
+        self.path = path
+        self.current_alias = current_alias or ""
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            alias_input = Input(value=self.current_alias, id="alias-input")
+            alias_input.border_title = f"Alias for {self.path}"
+            alias_input.border_subtitle = "enter: save (blank clears)  esc: cancel"
+            yield alias_input
+
+    def on_mount(self) -> None:
+        alias_input = self.query_one("#alias-input", Input)
+        alias_input.focus()
+        alias_input.select_all()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Input.Submitted)
+    def _alias_submitted(self) -> None:
+        self.dismiss(self.query_one("#alias-input", Input).value.strip())
 
 
 class FolderAssignModal(ModalScreen[str | None]):
@@ -325,6 +376,7 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
         Binding("a", "start_assign", "Hold"),
         Binding("A", "add_samples_directory", "Add path"),
         Binding("D", "remove_samples_directory", "Remove path"),
+        Binding("r", "set_path_alias", "Alias"),
         Binding("t", "auto_tag_cursor_node", "Auto-tag"),
         Binding("R", "rescan_cursor_node", "Rescan"),
         Binding(".", "focus_cursor_folder", "Focus folder"),
@@ -357,6 +409,7 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
         settings_path: Path | None = None,
         db_path: Path | None = None,
         configurations_dir: Path | None = None,
+        directory_aliases: dict[Path, str] | None = None,
         *args,
         **kwargs,
     ) -> None:
@@ -392,6 +445,9 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
             else config_store.DEFAULT_CONFIGURATIONS_DIR
         )
         self.samples_directories = list(samples_directories)
+        self.directory_aliases: dict[Path, str] = (
+            dict(directory_aliases) if directory_aliases is not None else {}
+        )
         self.last_previewed: Path | None = None
         self.preview_error: str | None = None
         self.previewer = Previewer()
@@ -412,7 +468,8 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
             self._add_root_node(directory)
 
     def _add_root_node(self, directory: Path) -> TreeNode[Entry]:
-        return self.root.add(str(directory), data=Entry(directory), allow_expand=True)
+        label = self.directory_aliases.get(directory, str(directory))
+        return self.root.add(label, data=Entry(directory), allow_expand=True)
 
     def _display_roots(self, paths: list[Path]) -> None:
         """Replaces whatever's currently displayed at the root level with
@@ -900,7 +957,7 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
             if directory is None or directory in self.samples_directories:
                 return
             self.samples_directories.append(directory)
-            self._persist_samples_directories()
+            self._persist_settings()
             self._add_root_node(directory)
 
         self.app.push_screen(DirectoryPickerModal(Path.home()), handle_result)
@@ -926,12 +983,34 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action == "remove_samples_directory":
             return self._cursor_on_root_path() is not None
+        if action == "set_path_alias":
+            return self._cursor_on_root_path() is not None
         if action == "add_samples_directory":
             return not self._root_focus_stack
         if action == "rescan_cursor_node":
             node = self.cursor_node
             return node is not None and node.data is not None and node.allow_expand
         return True
+
+    def action_set_path_alias(self) -> None:
+        node = self._cursor_on_root_path()
+        if node is None:
+            return
+        path = node.data.path
+
+        def handle_result(value: str | None) -> None:
+            if value is None:
+                return
+            if value:
+                self.directory_aliases[path] = value
+            else:
+                self.directory_aliases.pop(path, None)
+            self._persist_settings()
+            node.set_label(self.directory_aliases.get(path, str(path)))
+
+        self.app.push_screen(
+            PathAliasModal(path, self.directory_aliases.get(path)), handle_result
+        )
 
     def action_remove_samples_directory(self) -> None:
         node = self._cursor_on_root_path()
@@ -943,7 +1022,8 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
             if not confirmed:
                 return
             self.samples_directories.remove(path)
-            self._persist_samples_directories()
+            self.directory_aliases.pop(path, None)
+            self._persist_settings()
             if self._expanded_root_node is node:
                 self._expanded_root_node = None
             node.remove()
@@ -965,9 +1045,12 @@ class FileBrowser(Tree[Entry], VimGoToTopAndBottom):
 
         self.app.push_screen(ConfirmRemovePathModal(path.name), handle_result)
 
-    def _persist_samples_directories(self) -> None:
+    def _persist_settings(self) -> None:
         settings_module.save_settings(
-            settings_module.Settings(samples_directories=list(self.samples_directories)),
+            settings_module.Settings(
+                samples_directories=list(self.samples_directories),
+                directory_aliases=dict(self.directory_aliases),
+            ),
             self.settings_path,
         )
 

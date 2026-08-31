@@ -84,6 +84,73 @@ class ConfirmCleanTagsModal(ModalScreen[bool]):
         self.dismiss(event.option_id == "confirm")
 
 
+class ConfirmDeleteTagModal(ModalScreen[bool]):
+    """Confirmation before "d" soft-deletes a tag - same OptionList +
+    detail-pane shape as ConfigList's ConfirmDeleteModal/this module's own
+    ConfirmCleanTagsModal. Soft, per tag_store.delete_tag: the tag (and
+    every pairing to it) is only deactivated, so it drops out of every
+    listing and filter immediately, but - unlike an actual delete - a
+    later manual re-tag can bring it back; a rescan alone never will
+    (_auto_assign_tag's rescan-safe rule)."""
+
+    DEFAULT_CSS = """
+    ConfirmDeleteTagModal {
+        align: center middle;
+    }
+    ConfirmDeleteTagModal > Vertical {
+        width: 90%;
+        max-width: 33%;
+        height: auto;
+    }
+    ConfirmDeleteTagModal OptionList {
+        border: round $error;
+        height: auto;
+    }
+    ConfirmDeleteTagModal #detail {
+        border: round $error;
+        height: auto;
+        margin-top: 1;
+        padding: 0 1;
+    }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, tag_name: str) -> None:
+        super().__init__()
+        self.tag_name = tag_name
+        self._details = (
+            f"Remove tag '{self.tag_name}' from every sample. Won't be reapplied by a "
+            "rescan - only tagging a sample by hand brings it back.",
+            "Keep the tag as it is.",
+        )
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            options = VimOptionList(
+                Option(f"Delete '{self.tag_name}'", id="confirm"),
+                Option("Cancel", id="cancel"),
+            )
+            options.border_title = "Delete tag"
+            options.border_subtitle = f"1 of {len(self._details)}"
+            yield options
+            yield Static(self._details[0], id="detail")
+
+    def on_mount(self) -> None:
+        self.query_one(VimOptionList).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        options = event.option_list
+        options.border_subtitle = f"{event.option_index + 1} of {options.option_count}"
+        self.query_one("#detail", Static).update(self._details[event.option_index])
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(event.option_id == "confirm")
+
+
 class TagBrowser(ListView, VimGoToTopAndBottom):
     """Lists every tag with a count of samples under it
     (01-auto-tagging.md's dedicated tag pane). Space toggles the
@@ -129,6 +196,7 @@ class TagBrowser(ListView, VimGoToTopAndBottom):
         Binding("j", "cursor_down", "Down (vim)", show=False),
         Binding("k", "cursor_up", "Up (vim)", show=False),
         Binding("space", "toggle_selected_tag", "Filter"),
+        Binding("d", "delete_selected_tag", "Delete tag"),
         Binding("C", "clean_unused_tags", "Clean up unused"),
     ] + VimGoToTopAndBottom.BINDINGS
 
@@ -185,6 +253,26 @@ class TagBrowser(ListView, VimGoToTopAndBottom):
             self.selected_tags.add(name)
         self.refresh_list()
         self.post_message(self.SelectionChanged())
+
+    def action_delete_selected_tag(self) -> None:
+        if self.index is None or not self.counts:
+            return
+        name, _ = self.counts[self.index]
+
+        def handle_result(confirmed: bool) -> None:
+            if not confirmed:
+                return
+            was_selected = name in self.selected_tags
+            tag_store.delete_tag(name, self.db_path)
+            self.selected_tags.discard(name)
+            self.refresh_list()
+            if was_selected:
+                # A deleted tag can no longer match anything, so the
+                # samples pane's AND filter needs to drop it too - same
+                # message FileBrowser already listens for on space.
+                self.post_message(self.SelectionChanged())
+
+        self.app.push_screen(ConfirmDeleteTagModal(name), handle_result)
 
     def refresh_list(self) -> None:
         previous_index = self.index
